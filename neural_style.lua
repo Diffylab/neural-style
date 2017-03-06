@@ -45,6 +45,9 @@ cmd:option('-backend', 'nn', 'nn|cudnn|clnn')
 cmd:option('-cudnn_autotune', false)
 cmd:option('-seed', -1)
 
+cmd:option('-padding', 'default', 'default|reflection|replication')
+cmd:option('-prepadding', 0, '0|1|2|3|4|5|6|7')
+
 cmd:option('-content_layers', 'relu4_2', 'layers for content')
 cmd:option('-style_layers', 'relu1_1,relu2_1,relu3_1,relu4_1,relu5_1', 'layers for style')
 
@@ -109,6 +112,38 @@ local function main(params)
   local content_losses, style_losses = {}, {}
   local next_content_idx, next_style_idx = 1, 1
   local net = nn.Sequential()
+
+  if params.prepadding == 0 then
+    -- nothing
+  elseif params.prepadding == 1 then                              -- nn.SpatialZeroPadding(1)
+    print('Padding sequence with zeroes')
+    net:add(nn.SpatialZeroPadding(1, 1, 1, 1):type(dtype))
+  elseif params.prepadding == 2 then                              -- nn.SpatialReplicationPadding(1), nn.SpatialZeroPadding(1)
+    print('Padding sequence with border replicas')
+    net:add(nn.SpatialReplicationPadding(1, 1, 1, 1):type(dtype))
+    print('Padding sequence with zeroes')
+    net:add(nn.SpatialZeroPadding(1, 1, 1, 1):type(dtype))
+  elseif params.prepadding == 3 then                              -- nn.SpatialReplicationPadding(2), nn.SpatialZeroPadding(1)
+    print('Padding sequence with border replicas')
+    net:add(nn.SpatialReplicationPadding(2, 2, 2, 2):type(dtype))
+    print('Padding sequence with zeroes')
+    net:add(nn.SpatialZeroPadding(1, 1, 1, 1):type(dtype))
+  elseif params.prepadding == 4 then                              -- nn.SpatialReflectionPadding(2), nn.SpatialZeroPadding(1)
+    print('Padding sequence with border reflections')
+    net:add(nn.SpatialReflectionPadding(2, 2, 2, 2):type(dtype))
+    print('Padding sequence with zeroes')
+    net:add(nn.SpatialZeroPadding(1, 1, 1, 1):type(dtype))
+  elseif params.prepadding == 5 then                              -- nn.SpatialReflectionPadding(2), nn.SpatialZeroPadding(1)
+    print('Padding sequence with border replicas')
+    net:add(nn.SpatialReplicationPadding(15, 15, 15, 15):type(dtype))
+  elseif params.prepadding == 6 then                              -- nn.SpatialZeroPadding(1)
+    print('Padding sequence with zeroes')
+    net:add(nn.SpatialZeroPadding(15, 15, 15, 15):type(dtype))
+  elseif params.prepadding == 7 then                              -- nn.SpatialZeroPadding(1)
+    print('Padding sequence with zeroes')
+    net:add(nn.SpatialZeroPadding(30, 30, 30, 30):type(dtype))
+  end
+
   if params.tv_weight > 0 then
     local tv_mod = nn.TVLoss(params.tv_weight):type(dtype)
     net:add(tv_mod)
@@ -118,6 +153,29 @@ local function main(params)
       local layer = cnn:get(i)
       local name = layer.name
       local layer_type = torch.type(layer)
+
+      local is_convolution = (layer_type == 'cudnn.SpatialConvolution' or layer_type == 'nn.SpatialConvolution')
+      if is_convolution and params.padding ~= 'default' then
+        local layer_padW, layer_padH = layer.padW, layer.padH
+        local msg
+        local pad_layer
+        if params.padding == 'reflection' then
+          pad_layer = nn.SpatialReflectionPadding(layer_padW, layer_padW, layer_padH, layer_padH):type(dtype)
+          msg = 'Padding layer %d with reflections'
+        elseif params.padding == 'replication' then
+          pad_layer = nn.SpatialReplicationPadding(layer_padW, layer_padW, layer_padH, layer_padH):type(dtype)
+          msg = 'Padding layer %d with edges replicas'
+        else
+          assert((params.padding == 'reflection' or
+                  params.padding == 'replication'),
+                  'Unknown padding. Stop.')
+        end
+        print(string.format(msg, i))
+        net:add(pad_layer)
+        layer.padW = 0
+        layer.padH = 0
+      end
+
       local is_pooling = (layer_type == 'cudnn.SpatialMaxPooling' or layer_type == 'nn.SpatialMaxPooling')
       if is_pooling and params.pooling == 'avg' then
         assert(layer.padW == 0 and layer.padH == 0)
