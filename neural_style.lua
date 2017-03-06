@@ -488,7 +488,8 @@ function match_color(target_img, source_img, mode, eps)
     local Qt_Cs_Qt = Qt * Cs * Qt
     local eva_QtCsQt, eve_QtCsQt = torch.symeig(Qt_Cs_Qt, 'V', 'L')
     local QtCsQt = eve_QtCsQt * torch.diag(eva_QtCsQt):sqrt() * eve_QtCsQt:t()
-    ts = torch.inverse(Qt) * QtCsQt * torch.inverse(Qt) * t
+    local iQt = torch.inverse(Qt)
+    ts = iQt * QtCsQt * iQt * t
   else
     assert((mode == 'chol' or
             mode == 'pca' or
