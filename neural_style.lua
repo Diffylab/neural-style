@@ -350,11 +350,17 @@ local function main(params)
     net:forward(x)
     local grad = net:updateGradInput(x, dy)
     local loss = 0
+    local loss_content_logmean = 0
     for _, mod in ipairs(content_losses) do
       loss = loss + mod.loss
+      loss_content_logmean = loss_content_logmean + math.log(mod.loss, 10)
     end
-    auto_off_grad_norm = loss < 1  -- while content doesn't change, temporarily disable gradients normalization,
-                                   -- because optimization seems to stuck with it at ≈0 content losses on some images
+    loss_content_logmean = loss_content_logmean / #content_losses
+
+    -- If image doesn't change, temporarily disable gradients normalization.
+    local auto_off_threshold = math.log(params.content_weight, 10) - 5 + (math.log(params.style_weight, 10) / 10) 
+    auto_off_grad_norm = loss_content_logmean < auto_off_threshold
+
     for _, mod in ipairs(style_losses) do
       loss = loss + mod.loss
     end
