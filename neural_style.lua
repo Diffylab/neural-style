@@ -320,6 +320,14 @@ local function main(params)
       local filename = build_filename(params.output_image, t)
       if t == params.num_iterations then
         filename = params.output_image
+
+        -- Save final result in both color variants to skip recalculation
+        if params.original_colors == 2 then
+          local disp_oc = original_colors(content_image, disp)
+          local ext = paths.extname(filename)
+          local filename_oc = string.format('%s/%s_oc.%s', paths.dirname(filename), paths.basename(filename, ext), ext)
+          image.save(filename_oc, disp_oc)
+        end
       end
 
       -- Maybe perform postprocessing for color-independent style transfer
