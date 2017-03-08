@@ -494,10 +494,10 @@ end
 function preprocess(img)
   local mean_pixel = torch.DoubleTensor({103.939, 116.779, 123.68})
   local perm = torch.LongTensor{3, 2, 1}
-  img = img:index(1, perm):mul(256.0)
+  local img_p = torch.mul(img:index(1, perm), 256.0)
   mean_pixel = mean_pixel:view(3, 1, 1):expandAs(img)
-  img:add(-1, mean_pixel)
-  return img
+  img_p:add(-1, mean_pixel)
+  return img_p
 end
 
 
@@ -505,10 +505,10 @@ end
 function deprocess(img)
   local mean_pixel = torch.DoubleTensor({103.939, 116.779, 123.68})
   mean_pixel = mean_pixel:view(3, 1, 1):expandAs(img)
-  img = img + mean_pixel
+  local img_d = img + mean_pixel
   local perm = torch.LongTensor{3, 2, 1}
-  img = img:index(1, perm):div(256.0)
-  return img
+  img_d = img_d:index(1, perm):div(256.0)
+  return img_d
 end
 
 
