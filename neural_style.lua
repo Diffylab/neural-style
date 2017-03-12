@@ -524,13 +524,147 @@ end
 -- from Leon Gatys's code: https://github.com/leongatys/NeuralImageSynthesis/blob/master/ExampleNotebooks/ColourControl.ipynb
 -- and ProGamerGov's code: https://github.com/jcjohnson/neural-style/issues/376
 function match_color(target_img, source_img, mode, eps)
+  mode = mode or 'pca'
+  eps = eps or 1e-5
+
+  if mode == 'lab' then
+    -- Color transfer between images
+    -- https://github.com/jrosebr1/color_transfer
+    -- https://www.researchgate.net/publication/220518215_Color_Transfer_between_Images
+    -- https://www.cs.tau.ac.il/~turkel/imagepapers/ColorTransfer.pdf
+    local s_lab = image.rgb2lab(source_img)  -- -100...100 range?
+    local t_lab = image.rgb2lab(target_img)
+    -- print(s_lab:min(), s_lab:max())
+    -- print(t_lab:min(), t_lab:max())
+    local sMean, sStd = s_lab:mean(3):mean(2), s_lab:view(s_lab:size(1), s_lab[1]:nElement()):std(2):view(3,1,1)
+    local tMean, tStd = t_lab:mean(3):mean(2), t_lab:view(t_lab:size(1), t_lab[1]:nElement()):std(2):view(3,1,1)
+    local tCol = (t_lab - tMean:expandAs(t_lab)):cmul(sStd:expandAs(t_lab)):cdiv(tStd:expandAs(t_lab)) + sMean:expandAs(t_lab)
+    return image.lab2rgb(tCol:clamp(0, 255)):clamp(0, 1)
+  elseif mode == 'rgb' then
+    local sMean, sStd = source_img:mean(3):mean(2), source_img:view(source_img:size(1), source_img[1]:nElement()):std(2):view(3,1,1)
+    local tMean, tStd = target_img:mean(3):mean(2), target_img:view(target_img:size(1), target_img[1]:nElement()):std(2):view(3,1,1)
+    local tCol = (target_img - tMean:expandAs(target_img)):cmul(sStd:expandAs(target_img)):cdiv(tStd:expandAs(target_img)) + sMean:expandAs(target_img)
+    return tCol:clamp(0, 1)
+  elseif mode == 'xyz' then
+    -- Coefficients from https://github.com/THEjoezack/ColorMine/blob/master/ColorMine/ColorSpaces/Conversions/XyzConverter.cs
+    -- X = r * 0.4124 + g * 0.3576 + b * 0.1805;
+    -- Y = r * 0.2126 + g * 0.7152 + b * 0.0722;
+    -- Z = r * 0.0193 + g * 0.1192 + b * 0.9505;
+
+    -- r = x * 3.2406  + y * -1.5372 + z * -0.4986;
+    -- g = x * -0.9689 + y * 1.8758  + z * 0.0415;
+    -- b = x * 0.0557  + y * -0.2040 + z * 1.0570;
+
+    -- local xyz_s = torch.Tensor(source_img:size(1),source_img:size(2),source_img:size(3))
+    -- xyz_s[1] = torch.mul(source_img[1], 0.4124) + torch.mul(source_img[2], 0.3576) + torch.mul(source_img[3], 0.1805)
+    -- xyz_s[2] = torch.mul(source_img[1], 0.2126) + torch.mul(source_img[2], 0.7152) + torch.mul(source_img[3], 0.0722)
+    -- xyz_s[3] = torch.mul(source_img[1], 0.0193) + torch.mul(source_img[2], 0.1192) + torch.mul(source_img[3], 0.9505)
+
+    local rgb_xyz_mat = torch.Tensor({{0.4124, 0.3576, 0.1805},
+                                      {0.2126, 0.7152, 0.0722},
+                                      {0.0193, 0.1192, 0.9505}})
+    local xyz_s = (rgb_xyz_mat * source_img:view(source_img:size(1), source_img[1]:nElement()))
+    local xyz_t = (rgb_xyz_mat * target_img:view(target_img:size(1), target_img[1]:nElement()))
+
+    local sMean, sStd = torch.mean(xyz_s, 2), torch.std(xyz_s, 2)
+    local tMean, tStd = torch.mean(xyz_t, 2), torch.std(xyz_t, 2)
+    local tCol = (xyz_t - tMean:expandAs(xyz_t)):cmul(sStd:expandAs(xyz_t)):cdiv(tStd:expandAs(xyz_t)) + sMean:expandAs(xyz_t)
+
+    local xyz_rgb_mat = torch.Tensor({{ 3.2406, -1.5372, -0.4986},
+                                      {-0.9689,  1.8758,  0.0415},
+                                      { 0.0557, -0.2040,  1.0570}})
+    tCol = (xyz_rgb_mat * tCol):viewAs(target_img)
+    return tCol:clamp(0, 1)
+  elseif mode == 'lms' then
+    -- https://www.researchgate.net/publication/220518215_Color_Transfer_between_Images
+    -- https://www.cs.tau.ac.il/~turkel/imagepapers/ColorTransfer.pdf
+
+    --   r       g       b
+    -- l 0 3811  0 5783  0 0402
+    -- m 0 1967  0 7244  0 0782
+    -- s 0 0241  0 1288  0 8444
+    -- l,m,s = log(l,m,s)
+
+    -- l   m   s
+    -- 1,  1,  1
+    -- 1,  1, -2
+    -- 1, -1,  0
+
+    -- l 1/sqr(3), 0, 0
+    -- a 0, 1/sqr(6), 0
+    -- b 0, 0, 1/sqr(2)
+
+    -- Lab = (t - Mean(t)) * Std(s) / Std(t) + Mean(s)
+
+    -- l         a         b
+    -- sqr(3)/3, 0,        0
+    -- 0,        sqr(6)/6, 0
+    -- 0,        0,        sqr(2)/2
+
+    -- l 1, 1, 1
+    -- m 1, 1, -1
+    -- s 1, -2, 0
+
+    -- l,m,s = 10^{l,m,s}   -- e^{l,m,s} ?
+    --   l       m        s
+    -- r 3,9388  -3,1625  0,1052
+    -- g -1,2659  2,4734  -0,1687
+    -- b 0,0493  -0,2418  1,1941
+
+    local rgb_lms_mat = torch.Tensor({{0.3811, 0.5783, 0.0402},
+                                      {0.1967, 0.7244, 0.0782},
+                                      {0.0241, 0.1288, 0.8444}})
+    local lms_mat2 = torch.Tensor({{1.0,  1.0,  1.0},
+                                   {1.0,  1.0, -2.0},
+                                   {1.0, -1.0,  0.0}})
+    local lms_mat3 = torch.Tensor({{1/math.sqrt(3), 0.0,            0.0},
+                                   {0.0,            1/math.sqrt(6), 0.0},
+                                   {0.0,            0.0,            1/math.sqrt(2)}})
+
+    local lms_s = (rgb_lms_mat * source_img:view(source_img:size(1), source_img[1]:nElement()))
+    local lms_s_l = torch.log(lms_s + eps) -- / math.log(10)
+    lms_s_l = lms_mat2 * lms_s_l
+    lms_s_l = lms_mat3 * lms_s_l
+
+    local lms_t = (rgb_lms_mat * target_img:view(target_img:size(1), target_img[1]:nElement()))
+    local lms_t_l = torch.log(lms_t + eps) -- / math.log(10)
+    lms_t_l = lms_mat2 * lms_t_l
+    lms_t_l = lms_mat3 * lms_t_l
+
+    local sMean, sStd = torch.mean(lms_s_l, 2), torch.std(lms_s_l, 2)
+    local tMean, tStd = torch.mean(lms_t_l, 2), torch.std(lms_t_l, 2)
+    local tCol = (lms_t_l - tMean:expandAs(lms_t_l)):cmul(sStd:expandAs(lms_t_l)):cdiv(tStd:expandAs(lms_t_l)) + sMean:expandAs(lms_t_l)
+
+    local lms_mat4 = torch.Tensor({{math.sqrt(3)/3, 0.0,            0.0},
+                                   {0.0,            math.sqrt(6)/6, 0.0},
+                                   {0.0,            0.0,            math.sqrt(2)/2}})
+    local lms_mat5 = torch.Tensor({{1.0,  1.0,  1.0},
+                                   {1.0,  1.0, -1.0},
+                                   {1.0, -2.0,  0.0}})
+    local lms_rgb_mat = torch.Tensor({{ 4.4679, -3.5873,  0.1193},
+                                      {-1.2186,  2.3809, -0.1624},
+                                      { 0.0497, -0.2439,  1.2045}})
+    tCol = lms_mat4 * tCol
+    tCol = lms_mat5 * tCol
+    tCol = torch.exp(tCol)  -- decimal: tCol = torch.exp(tCol * math.log(10)) --??? - 1e-5
+    local lms_rgb = (lms_rgb_mat * tCol):viewAs(target_img)
+    return lms_rgb:clamp(0, 1)
+  elseif mode == 'hsl' then
+    local s_hsl = image.rgb2hsl(source_img)  -- 0...1 range?
+    local t_hsl = image.rgb2hsl(target_img)
+    local sMean, sStd = s_hsl:mean(3):mean(2), s_hsl:view(s_hsl:size(1), s_hsl[1]:nElement()):var(2):view(3,1,1)
+    local tMean, tStd = t_hsl:mean(3):mean(2), t_hsl:view(t_hsl:size(1), t_hsl[1]:nElement()):var(2):view(3,1,1)
+    local tCol = (t_hsl - tMean:expandAs(t_hsl)):cmul(sStd:expandAs(t_hsl)):cdiv(tStd:expandAs(t_hsl)) + sMean:expandAs(t_hsl)
+    tCol[2]:clamp(0, 1)
+    tCol[2] = image.minmax{tensor = tCol[2], min = 0, max = 1}
+    return image.hsl2rgb(tCol):clamp(0, 1)
+  end
+
   -- Matches the colour distribution of the target image to that of the source image
   -- using a linear transform.
   -- Images are expected to be of form (c,h,w) and float in [0,1].
   -- Modes are chol, pca or sym for different choices of basis.
 
-  mode = mode or 'pca'
-  eps = eps or 1e-5
   local eyem = torch.eye(source_img:size(1)):mul(eps)
 
   local mu_s = torch.mean(source_img, 3):mean(2)
