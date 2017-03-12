@@ -580,10 +580,12 @@ function match_color(target_img, source_img, mode, eps)
     -- https://www.cs.tau.ac.il/~turkel/imagepapers/ColorTransfer.pdf
 
     --   r       g       b
-    -- l 0 3811  0 5783  0 0402
-    -- m 0 1967  0 7244  0 0782
-    -- s 0 0241  0 1288  0 8444
-    -- l,m,s = log(l,m,s)
+    -- l 0.3811  0.5783  0.0402
+    -- m 0.1967  0.7244  0.0782
+    -- s 0.0241  0.1288  0.8444
+    -- l,m,s = log(l,m,s)  -- Decimal logarithm is used in original paper, but
+                           -- it seems that function can be done with natural logarithms, and
+                           -- without division/multiplication by log(10) it should be a little faster.
 
     -- l   m   s
     -- 1,  1,  1
@@ -607,9 +609,9 @@ function match_color(target_img, source_img, mode, eps)
 
     -- l,m,s = 10^{l,m,s}   -- e^{l,m,s} ?
     --   l       m        s
-    -- r 3,9388  -3,1625  0,1052
-    -- g -1,2659  2,4734  -0,1687
-    -- b 0,0493  -0,2418  1,1941
+    -- r  4.4679 -3.5873  0.1193
+    -- g -1.2186  2.3809 -0.1624
+    -- b  0.0497 -0.2439  1.2045
 
     local rgb_lms_mat = torch.Tensor({{0.3811, 0.5783, 0.0402},
                                       {0.1967, 0.7244, 0.0782},
