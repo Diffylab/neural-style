@@ -551,9 +551,9 @@ function match_color(target_img, source_img, mode, eps)
     -- Y = r * 0.2126 + g * 0.7152 + b * 0.0722;
     -- Z = r * 0.0193 + g * 0.1192 + b * 0.9505;
 
-    -- r = x * 3.2406  + y * -1.5372 + z * -0.4986;
-    -- g = x * -0.9689 + y * 1.8758  + z * 0.0415;
-    -- b = x * 0.0557  + y * -0.2040 + z * 1.0570;
+    -- r = x *  3.2406 + y * -1.5372 + z * -0.4986;
+    -- g = x * -0.9689 + y *  1.8758 + z *  0.0415;
+    -- b = x *  0.0557 + y * -0.2040 + z *  1.0570;
 
     -- local xyz_s = torch.Tensor(source_img:size(1),source_img:size(2),source_img:size(3))
     -- xyz_s[1] = torch.mul(source_img[1], 0.4124) + torch.mul(source_img[2], 0.3576) + torch.mul(source_img[3], 0.1805)
@@ -699,10 +699,7 @@ function match_color(target_img, source_img, mode, eps)
     local iQt = torch.inverse(Qt)
     ts = iQt * QtCsQt * iQt * t
   else
-    assert((mode == 'chol' or
-            mode == 'pca' or
-            mode == 'sym'),
-            'Unknown color matching mode. Stop.')
+    error('Unknown color matching mode. Stop.')
   end
 
   local matched_img = ts:viewAs(target_img) + mu_s:expandAs(target_img)
