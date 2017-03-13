@@ -629,12 +629,12 @@ function match_color(target_img, source_img, mode, eps)
     local s_hsl = image.rgb2hsl(source_img):view(source_img:size(1), source_img[1]:nElement())  -- 0...1 range?
     local t_hsl = image.rgb2hsl(target_img):view(target_img:size(1), target_img[1]:nElement())
 
-    s_hsl[1] = s_hsl[1]:mul(math.pi * 2)
-    t_hsl[1] = t_hsl[1]:mul(math.pi * 2)
-    s_cos = torch.cos(s_hsl[1])
-    t_cos = torch.cos(t_hsl[1])
-    s_hsl[1] = s_hsl[1]:sin()
-    t_hsl[1] = t_hsl[1]:sin()
+    s_hsl[1]:mul(math.pi * 2)
+    t_hsl[1]:mul(math.pi * 2)
+    local s_cos = torch.cos(s_hsl[1])
+    local t_cos = torch.cos(t_hsl[1])
+    s_hsl[1]:sin()
+    t_hsl[1]:sin()
 
     local scMean, scStd = s_cos:mean(), s_cos:std(1, true)[1]
     local tcMean, tcStd = t_cos:mean(), t_cos:std(1, true)[1]
@@ -643,11 +643,24 @@ function match_color(target_img, source_img, mode, eps)
     local tCol = (t_hsl - tMean:expandAs(t_hsl)):cmul(sStd:cdiv(tStd):expandAs(t_hsl)) + sMean:expandAs(t_hsl)
     local tcRes = (t_cos - tcMean) * (scStd / tcStd) + scMean
 
+--[[-- Additional hue correction, turned off because
+    -- sometimes it makes undesirable color jumps.
+    local tNeg = (tCol[1] + 1) % 4
+    tCol[1]:add(1):remainder(2):add(-1) --s1
+--    tCol[1]:add(2):remainder(2):add(-1) --s0
+    tCol[1][torch.ge(tNeg, 2)] = -tCol[1][torch.ge(tNeg, 2)]
+
+    tNeg = (tcRes + 3) % 4
+--    tcRes:add(1):remainder(2):add(-1) --s1
+    tcRes:add(2):remainder(2):add(-1) --s0
+    tcRes[torch.ge(tNeg, 2)] = -tcRes[torch.ge(tNeg, 2)]
+--]]
+
     tCol[1]:clamp(-1, 1)
     tcRes:clamp(-1, 1)
-    tCol[1] = tCol[1]:asin()
-    tCol[1][torch.lt(tcRes, 0)]:add(math.pi)
-    tCol[1] = tCol[1]:div(math.pi * 2) % 1
+    tCol[1]:asin()
+    tCol[1][torch.lt(tcRes, 0)] = tCol[1][torch.lt(tcRes, 0)] + math.pi
+    tCol[1]:div(math.pi * 2):remainder(1)
 
     return image.hsl2rgb(tCol:clamp(0, 1):viewAs(target_img)):clamp(0, 1)
   end
