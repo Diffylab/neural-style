@@ -645,7 +645,7 @@ function match_color(target_img, source_img, mode, eps)
 
 --[[-- Additional hue correction, turned off because
     -- sometimes it makes undesirable color jumps.
-    local tNeg = (tCol[1] + 1) % 4
+    local tNeg = tCol[1] % 4
     tCol[1]:add(1):remainder(2):add(-1) --s1
 --    tCol[1]:add(2):remainder(2):add(-1) --s0
     tCol[1][torch.ge(tNeg, 2)] = -tCol[1][torch.ge(tNeg, 2)]
