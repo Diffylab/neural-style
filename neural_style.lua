@@ -636,30 +636,29 @@ function match_color(target_img, source_img, mode, eps)
     s_hsl[1]:sin()
     t_hsl[1]:sin()
 
-    local scMean, scStd = s_cos:mean(), s_cos:std(1, true)[1]
-    local tcMean, tcStd = t_cos:mean(), t_cos:std(1, true)[1]
-    local sMean, sStd = s_hsl:mean(2), s_hsl:std(2, true)
-    local tMean, tStd = t_hsl:mean(2), t_hsl:std(2, true)
+    local scMean, scStd = s_cos:mean(), s_cos:var(1, true)[1]
+    local tcMean, tcStd = t_cos:mean(), t_cos:var(1, true)[1]
+    local sMean, sStd = s_hsl:mean(2), torch.Tensor(3, 1)
+    local tMean, tStd = t_hsl:mean(2), torch.Tensor(3, 1)
+    sStd[1], sStd[2], sStd[3] = torch.var(s_hsl[1], 1, true), torch.std(s_hsl[2], 1, true), torch.std(s_hsl[3], 1, true)
+    tStd[1], tStd[2], tStd[3] = torch.var(t_hsl[1], 1, true), torch.std(t_hsl[2], 1, true), torch.std(t_hsl[3], 1, true)
     local tCol = (t_hsl - tMean:expandAs(t_hsl)):cmul(sStd:cdiv(tStd):expandAs(t_hsl)) + sMean:expandAs(t_hsl)
     local tcRes = (t_cos - tcMean) * (scStd / tcStd) + scMean
 
---[[-- Additional hue correction, turned off because
-    -- sometimes it makes undesirable color jumps.
-    local tNeg = tCol[1] % 4
-    tCol[1]:add(1):remainder(2):add(-1) --s1
---    tCol[1]:add(2):remainder(2):add(-1) --s0
+--[[
+-- Additional hue correction, turned off because sometimes it makes undesirable color jumps.
+    local tNeg = (tCol[1] + 1) % 4
+    tCol[1]:add(1):remainder(2):add(-1)
     tCol[1][torch.ge(tNeg, 2)] = -tCol[1][torch.ge(tNeg, 2)]
-
-    tNeg = (tcRes + 3) % 4
---    tcRes:add(1):remainder(2):add(-1) --s1
-    tcRes:add(2):remainder(2):add(-1) --s0
+    tNeg = (tcRes + 1) % 4
+    tcRes:add(1):remainder(2):add(-1)
     tcRes[torch.ge(tNeg, 2)] = -tcRes[torch.ge(tNeg, 2)]
 --]]
 
     tCol[1]:clamp(-1, 1)
     tcRes:clamp(-1, 1)
     tCol[1]:asin()
-    tCol[1][torch.lt(tcRes, 0)] = tCol[1][torch.lt(tcRes, 0)] + math.pi
+    tCol[1][torch.lt(tcRes, 0)] = math.pi - tCol[1][torch.lt(tcRes, 0)]
     tCol[1]:div(math.pi * 2):remainder(1)
 
     return image.hsl2rgb(tCol:clamp(0, 1):viewAs(target_img)):clamp(0, 1)
