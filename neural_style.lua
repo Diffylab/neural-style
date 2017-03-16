@@ -626,40 +626,126 @@ function match_color(target_img, source_img, mode, eps)
     local lms_rgb = (lms_rgb_mat * tCol):viewAs(target_img)
     return lms_rgb:clamp(0, 1)
   elseif mode == 'hsl' then
+    -- Hue scaling in Cartesian coordinates
     local s_hsl = image.rgb2hsl(source_img):view(source_img:size(1), source_img[1]:nElement())  -- 0...1 range?
     local t_hsl = image.rgb2hsl(target_img):view(target_img:size(1), target_img[1]:nElement())
 
-    s_hsl[1]:mul(math.pi * 2)
-    t_hsl[1]:mul(math.pi * 2)
+    s_hsl[1]:mul(math.pi * 2):remainder(math.pi * 2)  -- a % 2π reduces sine error with angles outside 0...2π range
+    t_hsl[1]:mul(math.pi * 2):remainder(math.pi * 2)
     local s_cos = torch.cos(s_hsl[1])
     local t_cos = torch.cos(t_hsl[1])
     s_hsl[1]:sin()
     t_hsl[1]:sin()
+--[[
+    local da = 1e0
+    for a = -3601, 7201, da do
+      b = a / 360 * (math.pi * 2)
+      s = math.sin(b % (math.pi * 2))
+      c = math.cos(b % (math.pi * 2))
 
+      r = math.asin(s)
+      r1 = r / (2 * math.pi) * 360
+      if c < 0 then r = math.pi - r end
+      r = r % (2 * math.pi)
+      r = r / (2 * math.pi) * 360
+
+      rc = math.acos(c)
+      rc1 = rc / (2 * math.pi) * 360
+      if s < 0 then rc = -rc end
+      rc = rc % (2 * math.pi)
+      rc = rc / (2 * math.pi) * 360
+
+--      if a % 45 < da then print(a) end
+      if (math.abs(a % 360 - r) > 0.1) or (math.abs(a % 360 - rc) > 0.1) then
+        print(a, s, c, r, rc, a % 360 - r, a % 360 - rc, a % 360 - r % 360)
+      end
+    end
+    os.exit()
+--]]
+
+    -- Independent hue scaling
     local scMean, scStd = s_cos:mean(), s_cos:var(1, true)[1]
     local tcMean, tcStd = t_cos:mean(), t_cos:var(1, true)[1]
     local sMean, sStd = s_hsl:mean(2), torch.Tensor(3, 1)
     local tMean, tStd = t_hsl:mean(2), torch.Tensor(3, 1)
     sStd[1], sStd[2], sStd[3] = torch.var(s_hsl[1], 1, true), torch.std(s_hsl[2], 1, true), torch.std(s_hsl[3], 1, true)
     tStd[1], tStd[2], tStd[3] = torch.var(t_hsl[1], 1, true), torch.std(t_hsl[2], 1, true), torch.std(t_hsl[3], 1, true)
-    local tCol = (t_hsl - tMean:expandAs(t_hsl)):cmul(sStd:cdiv(tStd):expandAs(t_hsl)) + sMean:expandAs(t_hsl)
-    local tcRes = (t_cos - tcMean) * (scStd / tcStd) + scMean
+    local tCol = torch.Tensor(3, t_hsl:size(2))
+    tCol[1] = (t_hsl[1] - tMean[1][1]):mul((sStd[1][1] / tStd[1][1]) ^ 1.0):add(sMean[1][1]) -- 3 ≈ colorize, 1 = variance, 0.5 = std, 0 = relaxed colorization
+    tCol[2] = (t_hsl[2] - tMean[2][1]):mul(sStd[2][1] / tStd[2][1]):add(sMean[2][1])         --               variance feels most balanced to me
+    tCol[3] = (t_hsl[3] - tMean[3][1]):mul(sStd[3][1] / tStd[3][1]):add(sMean[3][1])
+    local tcRes = (t_cos - tcMean):mul((scStd / tcStd)               ^ 1.0):add(scMean)
+
+    -- Normalizing hue vector
+    local tHueScale = torch.pow(tCol[1], 2):add(torch.pow(tcRes, 2)):sqrt()
+    tCol[1]:cdiv(tHueScale)
+    tcRes:cdiv(tHueScale)
+
+    -- Restoring hue angle
+    tCol[1]:clamp(-1, 1) -- or asin / acos may produce "not a number" overflows
+    tcRes:clamp(-1, 1)                    -- angle  -90°...0°...90°...180°  181°...269° 270°
+    local sn = torch.lt(tCol[1], 0)       -- sine    -1 ...0 ... 1 ...  0   ~-0 ...~-1   -1
+    local cn = torch.lt(tcRes, 0)         -- cosine   0 ...1 ... 0 ... -1   ~-1 ...~-0    0
+    tCol[1]:asin()                        -- asin   -90°...0°...90°...  0°   -1 ...-89  -90°
+    tcRes:acos()                          -- acos    90°...0°...90°...180°  179°... 91   90°
+    tCol[1][cn] = math.pi - tCol[1][cn]   --        -90°...0°...90°...180°  181°...269  -90°
+    tcRes[sn] = -tcRes[sn]                --        -90°...0°...90°...180° -179°...-91  -90°
+    tCol[1]:remainder(math.pi * 2)        -- a % 2π 270°...0°...90°...180°  181°...269  270°
+    tcRes:remainder(math.pi * 2)          -- always 360 => 0, safe to use sqrt(a*b)
+
+    -- Merging angles, restored from both sine and cosine, to improve precision
+    -- 1) Simple variant, fastest, but makes even more errors (compared to "original > original") than log-mean
+    --tCol[1]:cmul(tcRes):sqrt()
+    -- --
+    -- 2) Mean / logarithmic mean variant
+    -- Rotating by π to remove possible rounding errors at 0-360 point
+    local m180 = (math.pi - tCol[1]):abs():ge(math.pi / 2)   -- mask to replace with rotated means
+    local tCol180 = torch.add(tCol[1], math.pi):remainder(math.pi * 2)
+    local tRes180 = torch.add(tcRes, math.pi):remainder(math.pi * 2)
+    -- 2.1) Mean, seems to make less errors
+    tCol180:add(tRes180):div(2)
+    tCol[1]:add(tcRes):div(2)
+    -- 2.2) Logarithmic mean, seems to make more errors, therefore probably doesn't make sense at all
+    --tCol180:cmul(tRes180):sqrt()
+    --tCol[1]:cmul(tcRes):sqrt()
+    -- --
+    tCol180:add(math.pi):remainder(math.pi * 2)  -- Rotating back
+    tCol[1][m180] = tCol180[m180]                -- and combining error-free halves
+
+    tCol[1]:div(math.pi * 2)
+    return image.hsl2rgb(tCol:clamp(0, 1):viewAs(target_img)):clamp(0, 1)
+  elseif mode == 'hsl-polar' then
+    -- Hue scaling in polar coordinates
+    local s_hsl = image.rgb2hsl(source_img):view(source_img:size(1), source_img[1]:nElement())  -- 0...1 range?
+    local t_hsl = image.rgb2hsl(target_img):view(target_img:size(1), target_img[1]:nElement())
+print(params.content_image, params.style_image)
+print("hueS (min, max, mean):      ", s_hsl[1]:min(), s_hsl[1]:max(), s_hsl[1]:mean())
+print("hueT (min, max, mean):      ", t_hsl[1]:min(), t_hsl[1]:max(), t_hsl[1]:mean())
 
 --[[
--- Additional hue correction, turned off because sometimes it makes undesirable color jumps.
-    local tNeg = (tCol[1] + 1) % 4
-    tCol[1]:add(1):remainder(2):add(-1)
-    tCol[1][torch.ge(tNeg, 2)] = -tCol[1][torch.ge(tNeg, 2)]
-    tNeg = (tcRes + 1) % 4
-    tcRes:add(1):remainder(2):add(-1)
-    tcRes[torch.ge(tNeg, 2)] = -tcRes[torch.ge(tNeg, 2)]
+-- Independent hue variance
+    local sMean, sStd = s_hsl:mean(2), torch.Tensor(3, 1)
+    local tMean, tStd = t_hsl:mean(2), torch.Tensor(3, 1)
+    sStd[1], sStd[2], sStd[3] = torch.var(s_hsl[1], 1, true), torch.std(s_hsl[2], 1, true), torch.std(s_hsl[3], 1, true)
+    tStd[1], tStd[2], tStd[3] = torch.var(t_hsl[1], 1, true), torch.std(t_hsl[2], 1, true), torch.std(t_hsl[3], 1, true)
+    local tCol = (t_hsl - tMean:expandAs(t_hsl)):cmul(sStd:cdiv(tStd):expandAs(t_hsl)) + sMean:expandAs(t_hsl)
 --]]
+-- --[[
+-- Independent hue scaling
+    local sMean, sStd = s_hsl:mean(2), torch.Tensor(3, 1)
+    local tMean, tStd = t_hsl:mean(2), torch.Tensor(3, 1)
+    sStd[1], sStd[2], sStd[3] = torch.var(s_hsl[1], 1, true), torch.std(s_hsl[2], 1, true), torch.std(s_hsl[3], 1, true)
+    tStd[1], tStd[2], tStd[3] = torch.var(t_hsl[1], 1, true), torch.std(t_hsl[2], 1, true), torch.std(t_hsl[3], 1, true)
+    local tCol = torch.Tensor(3, t_hsl:size(2))
+    tCol[1] = (t_hsl[1] - tMean[1][1]):mul((sStd[1][1] / tStd[1][1]) ^ 1.0):add(sMean[1][1]) -- 1 = variance, 0.5 = std
+    tCol[2] = (t_hsl[2] - tMean[2][1]):mul(sStd[2][1] / tStd[2][1]):add(sMean[2][1])      
+    tCol[3] = (t_hsl[3] - tMean[3][1]):mul(sStd[3][1] / tStd[3][1]):add(sMean[3][1])
+--]]
+print("hue scaled (min, max, mean):", tCol[1]:min(), tCol[1]:max(), tCol[1]:mean())
 
-    tCol[1]:clamp(-1, 1)
-    tcRes:clamp(-1, 1)
-    tCol[1]:asin()
-    tCol[1][torch.lt(tcRes, 0)] = math.pi - tCol[1][torch.lt(tcRes, 0)]
-    tCol[1]:div(math.pi * 2):remainder(1)
+    -- Hue normalization
+    tCol[1]:remainder(1)
+print("hue (min, max, mean):       ", tCol[1]:min(), tCol[1]:max(), tCol[1]:mean())
 
     return image.hsl2rgb(tCol:clamp(0, 1):viewAs(target_img)):clamp(0, 1)
   end
