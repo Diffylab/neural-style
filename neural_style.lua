@@ -718,36 +718,51 @@ function match_color(target_img, source_img, mode, eps)
     -- Hue scaling in polar coordinates
     local s_hsl = image.rgb2hsl(source_img):view(source_img:size(1), source_img[1]:nElement())  -- 0...1 range?
     local t_hsl = image.rgb2hsl(target_img):view(target_img:size(1), target_img[1]:nElement())
-print(params.content_image, params.style_image)
-print("hueS (min, max, mean):      ", s_hsl[1]:min(), s_hsl[1]:max(), s_hsl[1]:mean())
-print("hueT (min, max, mean):      ", t_hsl[1]:min(), t_hsl[1]:max(), t_hsl[1]:mean())
 
---[[
--- Independent hue variance
-    local sMean, sStd = s_hsl:mean(2), torch.Tensor(3, 1)
-    local tMean, tStd = t_hsl:mean(2), torch.Tensor(3, 1)
-    sStd[1], sStd[2], sStd[3] = torch.var(s_hsl[1], 1, true), torch.std(s_hsl[2], 1, true), torch.std(s_hsl[3], 1, true)
-    tStd[1], tStd[2], tStd[3] = torch.var(t_hsl[1], 1, true), torch.std(t_hsl[2], 1, true), torch.std(t_hsl[3], 1, true)
-    local tCol = (t_hsl - tMean:expandAs(t_hsl)):cmul(sStd:cdiv(tStd):expandAs(t_hsl)) + sMean:expandAs(t_hsl)
---]]
--- --[[
--- Independent hue scaling
-    local sMean, sStd = s_hsl:mean(2), torch.Tensor(3, 1)
-    local tMean, tStd = t_hsl:mean(2), torch.Tensor(3, 1)
-    sStd[1], sStd[2], sStd[3] = torch.var(s_hsl[1], 1, true), torch.std(s_hsl[2], 1, true), torch.std(s_hsl[3], 1, true)
-    tStd[1], tStd[2], tStd[3] = torch.var(t_hsl[1], 1, true), torch.std(t_hsl[2], 1, true), torch.std(t_hsl[3], 1, true)
-    local tCol = torch.Tensor(3, t_hsl:size(2))
-    tCol[1] = (t_hsl[1] - tMean[1][1]):mul((sStd[1][1] / tStd[1][1]) ^ 1.0):add(sMean[1][1]) -- 1 = variance, 0.5 = std
-    tCol[2] = (t_hsl[2] - tMean[2][1]):mul(sStd[2][1] / tStd[2][1]):add(sMean[2][1])      
-    tCol[3] = (t_hsl[3] - tMean[3][1]):mul(sStd[3][1] / tStd[3][1]):add(sMean[3][1])
---]]
-print("hue scaled (min, max, mean):", tCol[1]:min(), tCol[1]:max(), tCol[1]:mean())
+    local sMean, sStd = s_hsl:mean(2):squeeze(2), torch.Tensor(3)
+    local tMean, tStd = t_hsl:mean(2):squeeze(2), torch.Tensor(3)
+    sStd[2], sStd[3] = torch.std(s_hsl[2], 1, true)[1], torch.std(s_hsl[3], 1, true)[1]
+    tStd[2], tStd[3] = torch.std(t_hsl[2], 1, true)[1], torch.std(t_hsl[3], 1, true)[1]
 
-    -- Hue normalization
-    tCol[1]:remainder(1)
-print("hue (min, max, mean):       ", tCol[1]:min(), tCol[1]:max(), tCol[1]:mean())
+    -- Finding source hue deltas
+    local hd1 = s_hsl[1] - sMean[1]
+    local hd3 = hd1 + 1
+    local hd4 = hd1 - 1
+    local hd2 = sMean[1] - s_hsl[1] -- negative
+    -- Selecting deltas with minimal modules
+    local hm = torch.lt(torch.abs(hd3), torch.abs(hd1))
+    hd1[hm] = hd3[hm]
+    hm = torch.lt(torch.abs(hd4), torch.abs(hd1))
+    hd1[hm] = hd4[hm]
+    hm = torch.lt(torch.abs(hd2), torch.abs(hd1))
+    hd1[hm] = -hd2[hm]
+    s_hsl[1] = hd1
 
-    return image.hsl2rgb(tCol:clamp(0, 1):viewAs(target_img)):clamp(0, 1)
+    -- Same for target
+    hd1 = t_hsl[1] - tMean[1]
+    hd3 = hd1 + 1
+    hd4 = hd1 - 1
+    hd2 = tMean[1] - t_hsl[1] -- negative
+    hm = torch.lt(torch.abs(hd3), torch.abs(hd1))
+    hd1[hm] = hd3[hm]
+    hm = torch.lt(torch.abs(hd4), torch.abs(hd1))
+    hd1[hm] = hd4[hm]
+    hm = torch.lt(torch.abs(hd2), torch.abs(hd1))
+    hd1[hm] = -hd2[hm]
+    t_hsl[1] = hd1
+
+    -- Hue variance
+    sStd[1] = torch.pow(s_hsl[1], 2):mean()
+    tStd[1] = torch.pow(t_hsl[1], 2):mean()
+    -- Scaling hue, "ultraviolet" and "infrared" regions will be cut off
+    tScale = (sStd[1] / tStd[1]) ^ 1.0  -- 1 = variance, 0.5 = std
+    t_hsl[1]:mul(tScale):add(sMean[1])
+
+    -- Scaling saturation / hue as usual
+    t_hsl[2]:add(-tMean[2]):mul(sStd[2] / tStd[2]):add(sMean[2])
+    t_hsl[3]:add(-tMean[3]):mul(sStd[3] / tStd[3]):add(sMean[3])
+
+    return image.hsl2rgb(t_hsl:clamp(0, 1):viewAs(target_img)):clamp(0, 1)
   end
 
   -- from Leon Gatys's code: https://github.com/leongatys/NeuralImageSynthesis/blob/master/ExampleNotebooks/ColourControl.ipynb
