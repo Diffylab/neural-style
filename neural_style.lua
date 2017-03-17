@@ -758,7 +758,7 @@ function match_color(target_img, source_img, mode, eps)
     tScale = (sStd[1] / tStd[1]) ^ 1.0  -- 1 = variance, 0.5 = std
     t_hsl[1]:mul(tScale):add(sMean[1])
 
-    -- Scaling saturation / hue as usual
+    -- Scaling saturation / lightness as usual
     t_hsl[2]:add(-tMean[2]):mul(sStd[2] / tStd[2]):add(sMean[2])
     t_hsl[3]:add(-tMean[3]):mul(sStd[3] / tStd[3]):add(sMean[3])
 
