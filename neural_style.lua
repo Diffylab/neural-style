@@ -726,29 +726,23 @@ function match_color(target_img, source_img, mode, eps)
 
     -- Finding source hue deltas
     local hd1 = s_hsl[1] - sMean[1]
-    local hd3 = hd1 + 1
-    local hd4 = hd1 - 1
-    local hd2 = sMean[1] - s_hsl[1] -- negative
+    local hd2 = hd1 + 1
+    local hd3 = hd1 - 1
     -- Selecting deltas with minimal modules
-    local hm = torch.lt(torch.abs(hd3), torch.abs(hd1))
+    local hm = torch.lt(torch.abs(hd2), torch.abs(hd1))
+    hd1[hm] = hd2[hm]
+    hm = torch.lt(torch.abs(hd3), torch.abs(hd1))
     hd1[hm] = hd3[hm]
-    hm = torch.lt(torch.abs(hd4), torch.abs(hd1))
-    hd1[hm] = hd4[hm]
-    hm = torch.lt(torch.abs(hd2), torch.abs(hd1))
-    hd1[hm] = -hd2[hm]
     s_hsl[1] = hd1
 
     -- Same for target
     hd1 = t_hsl[1] - tMean[1]
-    hd3 = hd1 + 1
-    hd4 = hd1 - 1
-    hd2 = tMean[1] - t_hsl[1] -- negative
+    hd2 = hd1 + 1
+    hd3 = hd1 - 1
+    hm = torch.lt(torch.abs(hd2), torch.abs(hd1))
+    hd1[hm] = hd2[hm]
     hm = torch.lt(torch.abs(hd3), torch.abs(hd1))
     hd1[hm] = hd3[hm]
-    hm = torch.lt(torch.abs(hd4), torch.abs(hd1))
-    hd1[hm] = hd4[hm]
-    hm = torch.lt(torch.abs(hd2), torch.abs(hd1))
-    hd1[hm] = -hd2[hm]
     t_hsl[1] = hd1
 
     -- Hue variance
