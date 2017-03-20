@@ -716,25 +716,42 @@ function match_color(target_img, source_img, mode, eps)
     return image.hsl2rgb(tCol:clamp(0, 1):viewAs(target_img)):clamp(0, 1)
   elseif mode == 'hsl-polar' then
     -- Hue scaling in polar coordinates
-    local s_hsl = image.rgb2hsl(source_img):view(source_img:size(1), source_img[1]:nElement())  -- 0...1 range?
+    local s_hsl = image.rgb2hsl(source_img):view(source_img:size(1), source_img[1]:nElement())
     local t_hsl = image.rgb2hsl(target_img):view(target_img:size(1), target_img[1]:nElement())
 
-    local sMean, sStd = s_hsl:mean(2):squeeze(2), torch.Tensor(3)
-    local tMean, tStd = t_hsl:mean(2):squeeze(2), torch.Tensor(3)
-    sStd[2], sStd[3] = torch.std(s_hsl[2], 1, true)[1], torch.std(s_hsl[3], 1, true)[1]
-    tStd[2], tStd[3] = torch.std(t_hsl[2], 1, true)[1], torch.std(t_hsl[3], 1, true)[1]
+-- TODO: measure time waste for wrong hue mean/variance calculation
+    local sMean, sVar = s_hsl:mean(2):squeeze(), s_hsl:var(2, true):squeeze() + eps
+    local tMean, tVar = t_hsl:mean(2):squeeze(), t_hsl:var(2, true):squeeze() + eps
+
+    -- Averaging hue in HSL makes significant wrong shift, taking mean hue from averaged RGB
+    local sMeanRGB, tMeanRGB = image.rgb2hsl(torch.mean(source_img, 3):mean(2)):squeeze(), image.rgb2hsl(torch.mean(target_img, 3):mean(2)):squeeze()
+    -- print(sMean, tMean, sMeanRGB, tMeanRGB)
+    -- Simple replacement corrects colors too much
+    sMean[1] = sMeanRGB[1]
+    tMean[1] = tMeanRGB[1]
+    -- Trying average(RGB + HLS)
+    local MiddleHue = ((sMean[1] + sMeanRGB[1]) / 2) % 1
+    local MiddleHueShifted = (((sMean[1] + 0.5) % 1 + (sMeanRGB[1] + 0.5) % 1) / 2 + 0.5) % 1
+    if (math.abs(sMean[1] - MiddleHueShifted) < math.abs(sMean[1] - MiddleHue)) or
+       (math.abs(sMeanRGB[1] - MiddleHueShifted) < math.abs(sMeanRGB[1] - MiddleHue))
+       then MiddleHue = MiddleHueShifted end
+    sMean[1] = MiddleHue
+    MiddleHue = ((tMean[1] + tMeanRGB[1]) / 2) % 1
+    MiddleHueShifted = (((tMean[1] + 0.5) % 1 + (tMeanRGB[1] + 0.5) % 1) / 2 + 0.5) % 1
+    if (math.abs(tMean[1] - MiddleHueShifted) < math.abs(tMean[1] - MiddleHue)) or
+       (math.abs(tMeanRGB[1] - MiddleHueShifted) < math.abs(tMeanRGB[1] - MiddleHue))
+       then MiddleHue = MiddleHueShifted end
+    tMean[1] = MiddleHue
 
     -- Finding source hue deltas
     local hd1 = s_hsl[1] - sMean[1]
     local hd2 = hd1 + 1
     local hd3 = hd1 - 1
-    -- Selecting deltas with minimal modules
     local hm = torch.lt(torch.abs(hd2), torch.abs(hd1))
     hd1[hm] = hd2[hm]
     hm = torch.lt(torch.abs(hd3), torch.abs(hd1))
     hd1[hm] = hd3[hm]
-    s_hsl[1] = hd1
-
+    s_hsl[1] = hd1   -- original hue can still be restored as (s_hsl[1] + sMean[1]):remainder(1)
     -- Same for target
     hd1 = t_hsl[1] - tMean[1]
     hd2 = hd1 + 1
@@ -746,15 +763,23 @@ function match_color(target_img, source_img, mode, eps)
     t_hsl[1] = hd1
 
     -- Hue variance
-    sStd[1] = torch.pow(s_hsl[1], 2):mean()
-    tStd[1] = torch.pow(t_hsl[1], 2):mean()
-    -- Scaling hue, "ultraviolet" and "infrared" regions will be cut off
-    tScale = (sStd[1] / tStd[1]) ^ 1.0  -- 1 = variance, 0.5 = std
-    t_hsl[1]:mul(tScale):add(sMean[1])
+    local HueDeltaVarPower = 2   -- 0 = off, 1 = mean(abs), 2 = variance, works like "histogram blurring"
+    sVar[1] = torch.abs(s_hsl[1]):pow(HueDeltaVarPower):mean() + eps
+    tVar[1] = torch.abs(t_hsl[1]):pow(HueDeltaVarPower):mean() + eps
 
-    -- Scaling saturation / lightness as usual
-    t_hsl[2]:add(-tMean[2]):mul(sStd[2] / tStd[2]):add(sMean[2])
-    t_hsl[3]:add(-tMean[3]):mul(sStd[3] / tStd[3]):add(sMean[3])
+    -- Limited scaling
+    local recolor_strength_lim = params.recolor_strength
+    local recolor_strength_sign; if recolor_strength_lim < 0 then recolor_strength_sign = -1 else recolor_strength_sign = 1 end
+    recolor_strength_lim = (math.abs(recolor_strength_lim) ^ (1/1.11)) * recolor_strength_sign
+--    if recolor_strength_lim > 1 then recolor_strength_lim = 1 end
+    -- Scaling hue, "ultraviolet" and "infrared" regions are cut off
+    -- variance^1/8 / lim
+    t_hsl[1]:mul((sVar[1] / tVar[1]) ^ (params.recolor_strength / 8)):clamp(-0.5, 0.5):add(tMean[1] + (sMean[1] - tMean[1]) * recolor_strength_lim):remainder(1)
+    -- Scaling saturation / lightness
+    -- standard deviation / lim
+    t_hsl[2]:add(-tMean[2]):mul((sVar[2] / tVar[2]) ^ params.recolor_strength / 2):add(tMean[2] + (sMean[2] - tMean[2]) * recolor_strength_lim)
+    -- variance^1/4 / lim
+    t_hsl[3]:add(-tMean[3]):mul((sVar[3] / tVar[3]) ^ (params.recolor_strength / 4)):add(tMean[3] + (sMean[3] - tMean[3]) * recolor_strength_lim)
 
     return image.hsl2rgb(t_hsl:clamp(0, 1):viewAs(target_img)):clamp(0, 1)
   end
