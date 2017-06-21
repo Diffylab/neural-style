@@ -55,10 +55,8 @@ local function main(params)
   end
   local dtype, multigpu = setup_gpu(params)
 
-  local loadcaffe_backend = params.backend
-  if params.backend == 'clnn' then loadcaffe_backend = 'nn' end
-  local cnn = loadcaffe.load(params.proto_file, params.model_file, loadcaffe_backend):type(dtype)
 
+  -- Loading images
   local content_image = image.load(params.content_image, 3)
   content_image = image.scale(content_image, params.image_size, 'bilinear')
   local content_image_caffe = preprocess(content_image):float()
@@ -76,10 +74,11 @@ local function main(params)
   local init_image = nil
   if params.init_image ~= '' then
     init_image = image.load(params.init_image, 3)
-    local H, W = content_image:size(2), content_image:size(3)
+    local H, W = content_image_caffe:size(2), content_image_caffe:size(3)
     init_image = image.scale(init_image, W, H, 'bilinear')
     init_image = preprocess(init_image):float()
   end
+
 
   -- Handle style blending weights for multiple style inputs
   local style_blend_weights = nil
@@ -104,10 +103,15 @@ local function main(params)
     style_blend_weights[i] = style_blend_weights[i] / style_blend_sum
   end
 
+
+  -- Loading network
+  local loadcaffe_backend = params.backend
+  if params.backend == 'clnn' then loadcaffe_backend = 'nn' end
+  local cnn = loadcaffe.load(params.proto_file, params.model_file, loadcaffe_backend):type(dtype)
+
+  -- Setting up the network, inserting style and content loss modules
   local content_layers = params.content_layers:split(",")
   local style_layers = params.style_layers:split(",")
-
-  -- Set up the network, inserting style and content loss modules
   local content_losses, style_losses = {}, {}
   local next_content_idx, next_style_idx = 1, 1
   local net = nn.Sequential()
@@ -155,88 +159,10 @@ local function main(params)
   end
   net:type(dtype)
 
-  -- Capture content targets
-  for i = 1, #content_losses do
-    content_losses[i].mode = 'capture'
-  end
-  print 'Capturing content targets'
-  print(net)
-  content_image_caffe = content_image_caffe:type(dtype)
-  net:forward(content_image_caffe:type(dtype))
 
-  -- Capture style targets
-  for i = 1, #content_losses do
-    content_losses[i].mode = 'none'
-  end
-  for i = 1, #style_images_caffe do
-    print(string.format('Capturing style target %d', i))
-    for j = 1, #style_losses do
-      style_losses[j].mode = 'capture'
-      style_losses[j].blend_weight = style_blend_weights[i]
-    end
-    net:forward(style_images_caffe[i]:type(dtype))
-  end
-
-  -- Set all loss modules to loss mode
-  for i = 1, #content_losses do
-    content_losses[i].mode = 'loss'
-  end
-  for i = 1, #style_losses do
-    style_losses[i].mode = 'loss'
-  end
-
-  -- We don't need the base CNN anymore, so clean it up to save memory.
-  cnn = nil
-  for i=1, #net.modules do
-    local module = net.modules[i]
-    if torch.type(module) == 'nn.SpatialConvolutionMM' then
-        -- remove these, not used, but uses gpu memory
-        module.gradWeight = nil
-        module.gradBias = nil
-    end
-  end
-  collectgarbage()
-
-  -- Initialize the image
-  local img = nil
-  if params.init == 'random' then
-    img = torch.randn(content_image:size()):float():mul(0.001)
-  elseif params.init == 'image' then
-    if init_image then
-      img = init_image:clone()
-    else
-      img = content_image_caffe:clone()
-    end
-  else
-    error('Invalid init type')
-  end
-  img = img:type(dtype)
-
-  -- Run it through the network once to get the proper size for the gradient
-  -- All the gradients will come from the extra loss modules, so we just pass
-  -- zeros into the top of the net on the backward pass.
-  local y = net:forward(img)
-  local dy = img.new(#y):zero()
-
-  -- Declaring this here lets us access it in maybe_print
-  local optim_state = nil
-  if params.optimizer == 'lbfgs' then
-    optim_state = {
-      maxIter = params.num_iterations,
-      verbose=true,
-      tolX=-1,
-      tolFun=-1,
-    }
-    if params.lbfgs_num_correction > 0 then
-      optim_state.nCorrection = params.lbfgs_num_correction
-    end
-  elseif params.optimizer == 'adam' then
-    optim_state = {
-      learningRate = params.learning_rate,
-    }
-  else
-    error(string.format('Unrecognized optimizer "%s"', params.optimizer))
-  end
+  -- Declaring these here to be accessible in feval
+  local y, dy
+  local optim_state
 
   local function maybe_print(t, loss)
     local verbose = (params.print_iter > 0 and t % params.print_iter == 0)
@@ -252,7 +178,7 @@ local function main(params)
     end
   end
 
-  local function maybe_save(t)
+  local function maybe_save(t, img)
     local should_save = params.save_iter > 0 and t % params.save_iter == 0
     should_save = should_save or t == params.num_iterations
     if should_save then
@@ -262,12 +188,10 @@ local function main(params)
       if t == params.num_iterations then
         filename = params.output_image
       end
-
       -- Maybe perform postprocessing for color-independent style transfer
       if params.original_colors == 1 then
         disp = original_colors(content_image, disp)
       end
-
       image.save(filename, disp)
     end
   end
@@ -290,24 +214,125 @@ local function main(params)
       loss = loss + mod.loss
     end
     maybe_print(num_calls, loss)
-    maybe_save(num_calls)
-
     collectgarbage()
     -- optim.lbfgs expects a vector for gradients
     return loss, grad:view(grad:nElement())
   end
 
-  -- Run optimization.
-  if params.optimizer == 'lbfgs' then
-    print('Running optimization with L-BFGS')
-    local x, losses = optim.lbfgs(feval, img, optim_state)
-  elseif params.optimizer == 'adam' then
-    print('Running optimization with ADAM')
-    for t = 1, params.num_iterations do
-      local x, losses = optim.adam(feval, img, optim_state)
+
+  -- Initializing the image
+  -- (images should be scaled to current resolution)
+  local img = nil
+  if params.init == 'random' then
+    img = torch.randn(content_image_caffe:size()):float():mul(0.001)
+  elseif params.init == 'image' then
+    if init_image then
+      img = init_image:clone()
+    else
+      img = content_image_caffe:clone()
     end
+  else
+    error('Invalid init type')
   end
-end
+
+
+  -- Running optimization.
+  -- Intializing optimizer (L-BFGS is tuned for for 1 iteration).
+  if params.optimizer == 'lbfgs' then
+    print('Running optimization with L-BFGS.')
+  elseif params.optimizer == 'adam' then
+    print('Running optimization with ADAM.')
+  end
+  local optim_state = nil
+  if params.optimizer == 'lbfgs' then
+    optim_state = {
+      maxIter = 1,
+      verbose=false,
+      tolX=-1,
+      tolFun=-1,
+    }
+    if params.lbfgs_num_correction > 0 then
+      optim_state.nCorrection = params.lbfgs_num_correction
+    end
+  elseif params.optimizer == 'adam' then
+    optim_state = {
+      learningRate = params.learning_rate,
+    }
+  else
+    error(string.format('Unrecognized optimizer "%s"', params.optimizer))
+  end
+
+  -- Checking network configuration
+  print(net)
+
+
+  -- Capturing style targets once
+  for i = 1, #content_losses do
+    content_losses[i].mode = 'none'
+  end
+  for i = 1, #style_images_caffe do
+    print(string.format('Capturing style target %d', i))
+    for j = 1, #style_losses do
+      style_losses[j].mode = 'capture'
+      style_losses[j].blend_weight = style_blend_weights[i]
+    end
+    net:forward(style_images_caffe[i]:type(dtype))
+  end
+
+
+  -- Iterating, image should be processed fragment by fragment, sequentially, in every iteration
+  for t = 1, params.num_iterations do
+
+
+    -- Loading parts of content image, scaled to current resolution
+    -- Here should be image splitting, temporarily using whole image
+    local content_fragment = content_image_caffe:clone()
+
+
+    for i = 1, #style_losses do
+      style_losses[i].mode = 'none'
+    end
+    for i = 1, #content_losses do
+      content_losses[i].mode = 'capture'
+    end
+    print 'Capturing content targets'
+    net:forward(content_fragment:type(dtype))
+
+    -- Set all loss modules to loss mode
+    for i = 1, #content_losses do
+      content_losses[i].mode = 'loss'
+    end
+    for i = 1, #style_losses do
+      style_losses[i].mode = 'loss'
+    end
+    collectgarbage()
+
+
+    -- Loading parts of working image (processed in previous iterations)
+    local img_fragment = img:clone():type(dtype)
+
+
+    -- Run image through the network once to get the proper size for the gradient
+    -- All the gradients will come from the extra loss modules, so we just pass
+    -- zeros into the top of the net on the backward pass.
+    y = net:forward(img_fragment)
+    dy = img_fragment.new(#y):zero()
+
+    if params.optimizer == 'lbfgs' then
+      local x, losses = optim.lbfgs(feval, img_fragment, optim_state)
+    elseif params.optimizer == 'adam' then
+      local x, losses = optim.adam(feval, img_fragment, optim_state)
+    end
+
+
+    -- Injecting processed piece back to full image
+    img = img_fragment:float()
+
+
+    maybe_save(t, img)
+  end -- iteration
+
+end -- main()
 
 
 function setup_gpu(params)
