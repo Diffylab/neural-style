@@ -166,12 +166,45 @@ local function main(params)
   img = img:type(dtype)
 
 
-  local cur_iter = 0 --num_calls = 0
+  local overlap_times = 3  -- Processing is square times longer
 
+  local cur_iter = 0
+  local sub_iter = math.ceil(params.num_iterations / 3)  --math.ceil(math.sqrt(params.num_iterations))  --30
+  local overlap = math.floor(params.image_size * (overlap_times - 1) / overlap_times)
+
+  local function maybe_save(i, appendix)
+    local should_save = params.save_iter > 0 and cur_iter % params.save_iter == 0
+    should_save = should_save or cur_iter >= params.num_iterations
+    if should_save then
+      local disp = deprocess(i:double())
+      disp = image.minmax{tensor=disp, min=0, max=1}
+      local filename = build_filename(params.output_image, cur_iter)
+      if cur_iter == params.num_iterations then
+        filename = params.output_image
+      end
+
+      -- Maybe perform postprocessing for color-independent style transfer
+      if params.original_colors == 1 then
+        disp = original_colors(content_image, disp)
+      end
+
+      image.save(filename .. appendix, disp)
+    end
+  end
+
+
+  if params.optimizer == 'lbfgs' then
+    print('Running optimization with L-BFGS')
+  elseif params.optimizer == 'adam' then
+    print('Running optimization with ADAM')
+  else
+    error(string.format('Unrecognized optimizer "%s"', params.optimizer))
+  end
+
+for t = 1, params.num_iterations, sub_iter do
 
   -- Processing fragments
 local img_clean = img:clone()
-local overlap = 50
 local fragment_counter = 0
 for fy = 1, content_image_caffe:size(2), params.image_size - overlap do
 for fx = 1, content_image_caffe:size(3), params.image_size - overlap do
@@ -308,26 +341,6 @@ print("Processing image part #" .. fragment_counter .. " ([" .. fx .. ", " .. fy
     end
   end
 
-  local function maybe_save(i, append)
-    local should_save = params.save_iter > 0 and cur_iter % params.save_iter == 0
-    should_save = should_save or cur_iter == params.num_iterations
-    if should_save then
-      local disp = deprocess(i:double())
-      disp = image.minmax{tensor=disp, min=0, max=1}
-      local filename = build_filename(params.output_image, cur_iter)
-      if cur_iter == params.num_iterations then
-        filename = params.output_image
-      end
-
-      -- Maybe perform postprocessing for color-independent style transfer
-      if params.original_colors == 1 then
-        disp = original_colors(content_image, disp)
-      end
-
-      image.save(filename .. append, disp)
-    end
-  end
-
   -- Function to evaluate loss and gradient. We run the net forward and
   -- backward to get the gradient, and sum up losses from the loss modules.
   -- optim.lbfgs internally handles iteration and calls this function many
@@ -353,7 +366,6 @@ print("Processing image part #" .. fragment_counter .. " ([" .. fx .. ", " .. fy
 
   -- Run optimization.
   if params.optimizer == 'lbfgs' then
-    print('Running optimization with L-BFGS')
     optim_state = {
       maxIter = 1,
       verbose=false,
@@ -364,7 +376,6 @@ print("Processing image part #" .. fragment_counter .. " ([" .. fx .. ", " .. fy
       optim_state.nCorrection = params.lbfgs_num_correction
     end
   elseif params.optimizer == 'adam' then
-    print('Running optimization with ADAM')
     optim_state = {
       learningRate = params.learning_rate,
     }
@@ -372,19 +383,20 @@ print("Processing image part #" .. fragment_counter .. " ([" .. fx .. ", " .. fy
     error(string.format('Unrecognized optimizer "%s"', params.optimizer))
   end
 
-  for t = 1, params.num_iterations do
-    cur_iter = t
+  for si = 0, sub_iter - 1 do
+    cur_iter = t + si
     if params.optimizer == 'lbfgs' then
       local x, losses = optim.lbfgs(feval, img_fragment, optim_state)
     elseif params.optimizer == 'adam' then
       local x, losses = optim.adam(feval, img_fragment, optim_state)
     end
-  end
+    if cur_iter >= params.num_iterations then break end
+  end -- sub-iteration
 
     -- Injecting processed piece back to full image
 --maybe_save(img_fragment, fx..","..fy.."_img_fragment_processed.png")
     img = image_overlay(img, img_fragment, fx, fy, overlap):float()
-  maybe_save(img, fx..","..fy.."_combined.png")
+--maybe_save(img, fx..","..fy.."_combined.png")
 
 
   net, cnn = nil, nil
@@ -393,7 +405,8 @@ print("Processing image part #" .. fragment_counter .. " ([" .. fx .. ", " .. fy
 end  -- fx
 end  -- fy
 
-  maybe_save(img, "")
+maybe_save(img, "")
+end -- iteration
 
 end -- main()
 
