@@ -212,8 +212,11 @@ for iter_group = 1, params.num_iterations, sub_iter do
   -- Processing fragments
 local img_clean = img:clone()
 local fragment_counter = 0
-for fy = 1, content_image_caffe:size(2) - overlap, params.image_size - overlap do
-for fx = 1, content_image_caffe:size(3) - overlap, params.image_size - overlap do
+for fy = 1, img_clean:size(2) - overlap, params.image_size - overlap do
+
+local img_row = torch.DoubleTensor(img:size(1), params.image_size, img:size(3))
+
+for fx = 1, img_clean:size(3) - overlap, params.image_size - overlap do
 fragment_counter = fragment_counter + 1
 print("Processing image part #" .. fragment_counter .. " ([" .. fx .. ", " .. fy .. "] of " .. content_image_caffe:size(3) .. "x" .. content_image_caffe:size(2) .. ").")
 
@@ -282,7 +285,6 @@ print("Processing image part #" .. fragment_counter .. " ([" .. fx .. ", " .. fy
 
     -- Loading parts of content image, scaled to current resolution
     local content_fragment = image_part(content_image_caffe, fx, fy, params.image_size)
---maybe_save(content_fragment, fx..","..fy.."_content_fragment.png")
 
 
   -- Capture content targets
@@ -321,7 +323,6 @@ print("Processing image part #" .. fragment_counter .. " ([" .. fx .. ", " .. fy
 
     -- Loading parts of working image (processed in previous iterations)
     local img_fragment = image_part(img_clean, fx, fy, params.image_size):type(dtype)
---maybe_save(img_fragment, fx..","..fy.."_img_fragment.png")
 
 
   -- Run it through the network once to get the proper size for the gradient
@@ -399,20 +400,81 @@ print("Processing image part #" .. fragment_counter .. " ([" .. fx .. ", " .. fy
     if cur_iter >= params.num_iterations then break end
   end -- sub-iteration
 
-    -- Injecting processed piece back to full image
---maybe_save(img_fragment, fx..","..fy.."_img_fragment_processed.png")
-    img = image_overlay(img, img_fragment, fx, fy, overlap):float()
---maybe_save(img, fx..","..fy.."_combined.png")
+
+    -- Making full row of fragments
+--    if params.save_iter == 1 then
+--      maybe_save(img_fragment, "_fragment["fx..","..fy.."]_processed.png")
+--    end
+
+    if (overlap > 0) and (fx > 1) then
+      local fragment_size = params.image_size
+      local iw, ih = img:size(3), img:size(2)
+      local mw, mh = math.min(overlap, iw - fx + 1), math.min(fragment_size, ih - fy + 1)
+      local xmask = torch.linspace(0, 1, overlap + 2)[{{2, -2}}]:view(1, 1, -1):expand(img_row:size(1), mh, overlap)
+      -- Cropping
+      local front = img_fragment[{{}, {1, mh}, {1, mw}}]:double()
+      local back = img_row[{{}, {1, mh}, {fx, fx + mw - 1}}]:double()
+      xmask = xmask[{{}, {}, {1, mw}}] --:contiguous()
+      -- Combining
+      img_row[{{}, {1, mh}, {fx, fx + mw - 1}}] = torch.cmul(front, xmask):add(torch.cmul(back, 1 - xmask)):type(img_row:type())
+      local cw = math.min(fragment_size, iw - fx + 1) - overlap
+      if cw > 0 then
+        img_row[{{}, {1, mh}, {fx + overlap, fx + overlap + cw - 1}}] = img_fragment[{{}, {1, mh}, {1 + overlap, overlap + cw}}]:type(img_row:type())
+      end
+    else
+      local fragment_size = params.image_size
+      local iw, ih = img:size(3), img:size(2)
+      local cw, ch = math.min(fragment_size, iw - fx + 1), math.min(fragment_size, ih - fy + 1)
+      if cw > 0 then
+        img_row[{{}, {1, ch}, {fx, fx + cw - 1}}] = img_fragment[{{}, {1, ch}, {1, cw}}]:type(img_row:type())
+      end
+    end
 
 
   net, cnn = nil, nil
   content_losses, style_losses = nil, nil
   collectgarbage()
 end  -- fx
+
+
+    -- Placing row to image
+    if (overlap > 0) and (fy > 1) then
+      local iw, ih = img:size(3), img:size(2)
+      local mw, mh = img_row:size(3), math.min(overlap, ih - fy + 1)
+      local ymask = torch.linspace(0, 1, overlap + 2)[{{2, -2}}]:view(1, -1, 1):expand(img_row:size(1), overlap, mw)
+      -- Cropping
+      local front = img_row[{{}, {1, mh}, {}}]:double()
+      local back = img[{{}, {fy, fy + mh - 1}, {}}]:double()
+      ymask = ymask[{{}, {1, mh}, {}}] --:contiguous()
+      -- Combining
+      img[{{}, {fy, fy + mh - 1}, {}}] = torch.cmul(front, ymask):add(torch.cmul(back, 1 - ymask)):type(img:type())
+      local ch = math.min(img_row:size(2), ih - fy + 1) - overlap
+      if ch > 0 then
+        img[{{}, {fy + overlap, fy + overlap + ch - 1}, {}}] = img_row[{{}, {overlap + 1, overlap + ch}, {}}]:type(img:type())
+      end
+    else
+      local fragment_size = params.image_size
+      local iw, ih = img:size(3), img:size(2)
+      local cw, ch = img_row:size(3), math.min(img_row:size(2), ih - fy + 1)
+      if ch > 0 then
+        img[{{}, {fy, fy + ch - 1}, {}}] = img_row[{{}, {1, ch}, {}}]:type(img:type())
+      end
+    end
+
+
+    img_row = nil
+    if params.save_iter == 1 then
+      maybe_save(img, "_row["..fy.."]_combined.png")
+    end
+    collectgarbage()
+
+
 end  -- fy
 
 maybe_save(img, "")
-end -- iteration
+end -- iteration group
+
+print("Done.")
 
 end -- main()
 
