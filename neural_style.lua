@@ -83,15 +83,21 @@ local function main(params)
 
 
   -- Functions for image splitting / merging
-  local function image_part(image, x, y, width)  -- Coordinates are 1...w/h, space beyond source image is grayed
-    local sw, sh = image:size(3), image:size(2)
+  local function image_part(full_image, x, y, width)  -- Coordinates are 1...w/h, space beyond source image is stretched
+    local sw, sh = full_image:size(3), full_image:size(2)
     local pw, ph = math.min(width, sw - x + 1), math.min(width, sh - y + 1)
-    local part = torch.zeros(image:size(1), width, width):type(image:type())
-    part[{{}, {1, ph}, {1, pw}}] = image[{{}, {y, y + ph - 1}, {x, x + pw - 1}}]
+    local part = torch.Tensor(full_image:size(1), width, width):type(full_image:type())
+    part[{{}, {1, ph}, {1, pw}}] = full_image[{{}, {y, y + ph - 1}, {x, x + pw - 1}}]
+    if pw < width then
+      part[{{}, {1, ph}, {pw + 1, width}}] = part[{{}, {1, ph}, {pw, pw}}]:expand(part:size(1), ph, width - pw)
+    end
+    if ph < width then
+      part[{{}, {ph + 1, width}, {1, width}}] = part[{{}, {ph, ph}, {1, width}}]:expand(part:size(1), width - ph, width)
+    end
     return part:clone()
   end
 
-  local function image_overlay(image, part, x, y, overlap)  -- Coordinates are 1...w/h
+  local function image_overlay(full_image, part, x, y, overlap)  -- Coordinates are 1...w/h
     local fragment_size = params.image_size
     -- Making mask for full fragment
     local og = torch.linspace(0, 1, overlap + 2)[{{2, -2}}]
@@ -111,15 +117,15 @@ local function main(params)
       end
     end
     -- Cropping
-    local iw, ih = image:size(3), image:size(2)
+    local iw, ih = full_image:size(3), full_image:size(2)
     local pw, ph = math.min(part:size(3), iw - x + 1), math.min(part:size(2), ih - y + 1)
     local front = part[{{}, {1, ph}, {1, pw}}]:double()
-    local back = image[{{}, {y, y + ph - 1}, {x, x + pw - 1}}]:double()
+    local back = full_image[{{}, {y, y + ph - 1}, {x, x + pw - 1}}]:double()
     mask = mask[{{1, ph}, {1, pw}}]:contiguous():view(1, ph, pw):expand(front:size()) --:contiguous()
     -- Combining
-    local comb = torch.cmul(front, mask):add(torch.cmul(back, 1 - mask)):type(image:type())
-    image[{{}, {y, y + ph - 1}, {x, x + pw - 1}}] = comb
-    return image:contiguous()
+    local comb = torch.cmul(front, mask):add(torch.cmul(back, 1 - mask)):type(full_image:type())
+    full_image[{{}, {y, y + ph - 1}, {x, x + pw - 1}}] = comb
+    return full_image:contiguous()
   end
 
 
@@ -201,13 +207,13 @@ local function main(params)
     error(string.format('Unrecognized optimizer "%s"', params.optimizer))
   end
 
-for t = 1, params.num_iterations, sub_iter do
+for iter_group = 1, params.num_iterations, sub_iter do
 
   -- Processing fragments
 local img_clean = img:clone()
 local fragment_counter = 0
-for fy = 1, content_image_caffe:size(2), params.image_size - overlap do
-for fx = 1, content_image_caffe:size(3), params.image_size - overlap do
+for fy = 1, content_image_caffe:size(2) - overlap, params.image_size - overlap do
+for fx = 1, content_image_caffe:size(3) - overlap, params.image_size - overlap do
 fragment_counter = fragment_counter + 1
 print("Processing image part #" .. fragment_counter .. " ([" .. fx .. ", " .. fy .. "] of " .. content_image_caffe:size(3) .. "x" .. content_image_caffe:size(2) .. ").")
 
@@ -261,6 +267,18 @@ print("Processing image part #" .. fragment_counter .. " ([" .. fx .. ", " .. fy
   end
   net:type(dtype)
 
+  -- We don't need the base CNN anymore, so clean it up to save memory.
+  cnn = nil
+  for i=1, #net.modules do
+    local module = net.modules[i]
+    if torch.type(module) == 'nn.SpatialConvolutionMM' then
+        -- remove these, not used, but uses gpu memory
+        module.gradWeight = nil
+        module.gradBias = nil
+    end
+  end
+  collectgarbage()
+
 
     -- Loading parts of content image, scaled to current resolution
     local content_fragment = image_part(content_image_caffe, fx, fy, params.image_size)
@@ -299,18 +317,6 @@ print("Processing image part #" .. fragment_counter .. " ([" .. fx .. ", " .. fy
   for i = 1, #style_losses do
     style_losses[i].mode = 'loss'
   end
-
-  -- We don't need the base CNN anymore, so clean it up to save memory.
-  cnn = nil
-  for i=1, #net.modules do
-    local module = net.modules[i]
-    if torch.type(module) == 'nn.SpatialConvolutionMM' then
-        -- remove these, not used, but uses gpu memory
-        module.gradWeight = nil
-        module.gradBias = nil
-    end
-  end
-  collectgarbage()
 
 
     -- Loading parts of working image (processed in previous iterations)
@@ -364,7 +370,7 @@ print("Processing image part #" .. fragment_counter .. " ([" .. fx .. ", " .. fy
   end
 
 
-  -- Run optimization.
+  -- Run optimization
   if params.optimizer == 'lbfgs' then
     optim_state = {
       maxIter = 1,
@@ -384,7 +390,7 @@ print("Processing image part #" .. fragment_counter .. " ([" .. fx .. ", " .. fy
   end
 
   for si = 0, sub_iter - 1 do
-    cur_iter = t + si
+    cur_iter = iter_group + si
     if params.optimizer == 'lbfgs' then
       local x, losses = optim.lbfgs(feval, img_fragment, optim_state)
     elseif params.optimizer == 'adam' then
