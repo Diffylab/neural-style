@@ -86,46 +86,19 @@ local function main(params)
   local function image_part(full_image, x, y, width)  -- Coordinates are 1...w/h, space beyond source image is stretched
     local sw, sh = full_image:size(3), full_image:size(2)
     local pw, ph = math.min(width, sw - x + 1), math.min(width, sh - y + 1)
-    local part = torch.Tensor(full_image:size(1), width, width):type(full_image:type())
+    local fw, fh
+    local expand_small = false
+    if (sw > width) or expand_small then fw = width else fw = pw end
+    if (sh > width) or expand_small then fh = width else fh = ph end
+    local part = torch.Tensor(full_image:size(1), fh, fw):type(full_image:type())
     part[{{}, {1, ph}, {1, pw}}] = full_image[{{}, {y, y + ph - 1}, {x, x + pw - 1}}]
-    if pw < width then
-      part[{{}, {1, ph}, {pw + 1, width}}] = part[{{}, {1, ph}, {pw, pw}}]:expand(part:size(1), ph, width - pw)
+    if pw < fw then
+      part[{{}, {1, ph}, {pw + 1, fw}}] = part[{{}, {1, ph}, {pw, pw}}]:expand(part:size(1), ph, fw - pw)
     end
-    if ph < width then
-      part[{{}, {ph + 1, width}, {1, width}}] = part[{{}, {ph, ph}, {1, width}}]:expand(part:size(1), width - ph, width)
+    if ph < fh then
+      part[{{}, {ph + 1, fh}, {1, fw}}] = part[{{}, {ph, ph}, {1, fw}}]:expand(part:size(1), fh - ph, fw)
     end
     return part:clone()
-  end
-
-  local function image_overlay(full_image, part, x, y, overlap)  -- Coordinates are 1...w/h
-    local fragment_size = params.image_size
-    -- Making mask for full fragment
-    local og = torch.linspace(0, 1, overlap + 2)[{{2, -2}}]
-    local xb = og:view(1, -1):expand(fragment_size, overlap)
-    local yb = xb:t()
-    local mask = torch.ones(fragment_size, fragment_size)
-    if overlap > 0 then
-      if x > 1 then
-        mask[{{}, {1, overlap}}] = xb
-      end
-      if y > 1 then
-        if x > 1 then
-          mask[{{1, overlap}, {}}] = torch.cmin(mask[{{1, overlap}, {}}], yb)
-        else
-          mask[{{1, overlap}, {}}] = yb
-        end
-      end
-    end
-    -- Cropping
-    local iw, ih = full_image:size(3), full_image:size(2)
-    local pw, ph = math.min(part:size(3), iw - x + 1), math.min(part:size(2), ih - y + 1)
-    local front = part[{{}, {1, ph}, {1, pw}}]:double()
-    local back = full_image[{{}, {y, y + ph - 1}, {x, x + pw - 1}}]:double()
-    mask = mask[{{1, ph}, {1, pw}}]:contiguous():view(1, ph, pw):expand(front:size()) --:contiguous()
-    -- Combining
-    local comb = torch.cmul(front, mask):add(torch.cmul(back, 1 - mask)):type(full_image:type())
-    full_image[{{}, {y, y + ph - 1}, {x, x + pw - 1}}] = comb
-    return full_image:contiguous()
   end
 
 
@@ -212,11 +185,11 @@ for iter_group = 1, params.num_iterations, sub_iter do
   -- Processing fragments
 local img_clean = img:clone()
 local fragment_counter = 0
-for fy = 1, img_clean:size(2) - overlap, params.image_size - overlap do
+for fy = 1, math.max(1, img_clean:size(2) - overlap), params.image_size - overlap do
 
 local img_row = torch.DoubleTensor(img:size(1), params.image_size, img:size(3))
 
-for fx = 1, img_clean:size(3) - overlap, params.image_size - overlap do
+for fx = 1, math.max(1, img_clean:size(3) - overlap), params.image_size - overlap do
 fragment_counter = fragment_counter + 1
 print("Processing image part #" .. fragment_counter .. " ([" .. fx .. ", " .. fy .. "] of " .. content_image_caffe:size(3) .. "x" .. content_image_caffe:size(2) .. ").")
 
