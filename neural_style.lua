@@ -73,14 +73,6 @@ local function main(params)
     table.insert(style_images_caffe, img_caffe)
   end
 
-  local init_image = nil
-  if params.init_image ~= '' then
-    init_image = image.load(params.init_image, 3)
-    local H, W = content_image:size(2), content_image:size(3)
-    init_image = image.scale(init_image, W, H, 'bilinear')
-    init_image = preprocess(init_image):float()
-  end
-
 
   -- Functions for image splitting / merging
   local function image_part(full_image, x, y, width)  -- Coordinates are 1...w/h, space beyond source image is stretched
@@ -129,27 +121,12 @@ local function main(params)
   local style_layers = params.style_layers:split(",")
 
 
-  -- Initializing the image
-  local img = nil
-  if params.init == 'random' then
-    img = torch.randn(content_image:size()):float():mul(0.001)
-  elseif params.init == 'image' then
-    if init_image then
-      img = init_image:clone()
-    else
-      img = content_image_caffe:clone()
-    end
-  else
-    error('Invalid init type')
-  end
-  img = img:type(dtype)
-
-
-  local overlap_times = 3  -- Processing is square times longer
-
+  local scaledown, scaleup, scalesteps, scalecurrent
   local cur_iter = 0
-  local sub_iter = math.ceil(params.num_iterations / 3)  --math.ceil(math.sqrt(params.num_iterations))  --30
-  local overlap = math.floor(params.image_size * (overlap_times - 1) / overlap_times)
+  local img = nil
+  local init_image = nil
+  local content_image_caffe_scaled = content_image_caffe
+
 
   local function maybe_save(i, appendix)
     local should_save = params.save_iter > 0 and cur_iter % params.save_iter == 0
@@ -171,6 +148,15 @@ local function main(params)
     end
   end
 
+
+local function process_img() -- img shoud be initialized
+
+
+  local overlap_times = 3  -- Processing is square times longer
+
+
+  local sub_iter = math.ceil(params.num_iterations / 3)  --math.ceil(math.sqrt(params.num_iterations))  --30
+  local overlap = math.floor(params.image_size * (overlap_times - 1) / overlap_times)
 
   if params.optimizer == 'lbfgs' then
     print('Running optimization with L-BFGS')
@@ -261,7 +247,7 @@ print("Processing image part #" .. fragment_counter .. " ([" .. fx .. ", " .. fy
 
 
     -- Loading parts of content image, scaled to current resolution
-    local content_fragment = image_part(content_image_caffe, fx, fy, params.image_size)
+    local content_fragment = image_part(content_image_caffe_scaled, fx, fy, params.image_size)
 
 
   -- Capture content targets
@@ -447,9 +433,65 @@ end  -- fx
 
 
 end  -- fy
+if params.save_iter == 1 then
+  maybe_save(img, "_scale["..scalecurrent.."].png")
+end
+end -- iteration group
+end -- process_img()
+
+
+scaledown = 0.5 --0.5 1
+scaleup   = 2.0 --2.0 1
+scalesteps = 3
+if (scaledown > scaleup) then
+  scalecurrent = scaleup
+  scaleup = scaledown
+  scaledown = scalecurrent
+end
+
+
+  if params.init_image ~= '' then
+    init_image = image.load(params.init_image, 3)
+    local H, W = content_image:size(2), content_image:size(3)
+    init_image = image.scale(init_image, W, H, 'bilinear')
+    init_image = preprocess(init_image):float()
+  end
+
+  -- Initializing the image
+  if params.init == 'random' then
+    img = torch.randn(content_image:size()):float():mul(0.001)
+  elseif params.init == 'image' then
+    if init_image then
+      img = init_image:clone()
+    else
+      img = content_image_caffe:clone()
+    end
+  else
+    error('Invalid init type')
+  end
+  img = img:type(dtype)
+
+
+if (scaledown == 1.0) and (scaleup == 1.0) then
+  scalecurrent = 1
+  process_img()
+else
+  for scalelog = math.log(scaledown), math.log(scaleup), (math.log(scaleup) - math.log(scaledown)) / (scalesteps - 1) do
+    scalecurrent = math.exp(scalelog)
+    local H, W = content_image:size(2) * scalecurrent, content_image:size(3) * scalecurrent
+    img = image.scale(img, W, H, 'bilinear')
+    if (scalecurrent ~= 1.0) then
+      content_image_caffe_scaled = image.scale(content_image_caffe, W, H, 'bilinear')
+    else
+      content_image_caffe_scaled = content_image_caffe
+    end
+    process_img()
+  end
+end
+
 
 maybe_save(img, "")
-end -- iteration group
+
 
 print("Done.")
 
