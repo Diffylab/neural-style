@@ -48,6 +48,13 @@ cmd:option('-seed', -1)
 cmd:option('-content_layers', 'relu4_2', 'layers for content')
 cmd:option('-style_layers', 'relu1_1,relu2_1,relu3_1,relu4_1,relu5_1', 'layers for style')
 
+-- Multi-resolution options
+cmd:option('-expand_small', false, "Internally expand small images to 'image_size' (slower and maybe doesn't change much).")
+cmd:option('-overlap_times', 2, 'Number of fragments to mix for seamless stitching. Processing is squared times longer.')
+cmd:option('-scale_down', 1, 'Starting scaling factor (0.5, for example).')
+cmd:option('-scale_up', 1, "Final scaling factor (3.0 isn't bad).")
+cmd:option('-scale_steps', 1, 'Upscale steps, 1 for auto (scale <= 2).')
+
 
 local function main(params)
   if params.seed >= 0 then
@@ -76,12 +83,16 @@ local function main(params)
 
   -- Functions for image splitting / merging
   local function image_part(full_image, x, y, width)  -- Coordinates are 1...w/h, space beyond source image is stretched
+
+    local expand_small = params.expand_small or false -- expand small images to image_size
+    local minimal_size = 160 -- some models corrupt smaller images
+
     local sw, sh = full_image:size(3), full_image:size(2)
     local pw, ph = math.min(width, sw - x + 1), math.min(width, sh - y + 1)
     local fw, fh
-    local expand_small = false
     if (sw > width) or expand_small then fw = width else fw = pw end
     if (sh > width) or expand_small then fh = width else fh = ph end
+    fw, fh = math.max(fw, minimal_size), math.max(fh, minimal_size)
     local part = torch.Tensor(full_image:size(1), fh, fw):type(full_image:type())
     part[{{}, {1, ph}, {1, pw}}] = full_image[{{}, {y, y + ph - 1}, {x, x + pw - 1}}]
     if pw < fw then
@@ -121,7 +132,7 @@ local function main(params)
   local style_layers = params.style_layers:split(",")
 
 
-  local scaledown, scaleup, scalesteps, scalecurrent
+  local scaledown, scaleup, scalesteps, scalecurrent, scalestring
   local cur_iter = 0
   local img = nil
   local init_image = nil
@@ -152,7 +163,7 @@ local function main(params)
 local function process_img() -- img shoud be initialized
 
 
-  local overlap_times = 3  -- Processing is square times longer
+  local overlap_times = params.overlap_times -- Processing is squared times longer
 
 
   local sub_iter = math.ceil(params.num_iterations / 3)  --math.ceil(math.sqrt(params.num_iterations))  --30
@@ -177,7 +188,7 @@ local img_row = torch.DoubleTensor(img:size(1), params.image_size, img:size(3))
 
 for fx = 1, math.max(1, img_clean:size(3) - overlap), params.image_size - overlap do
 fragment_counter = fragment_counter + 1
-print("Processing image part #" .. fragment_counter .. " ([" .. fx .. ", " .. fy .. "] of " .. content_image_caffe:size(3) .. "x" .. content_image_caffe:size(2) .. ").")
+print("Processing image part #" .. fragment_counter .. " ([" .. fx .. ", " .. fy .. "] of " .. content_image_caffe_scaled:size(3) .. "x" .. content_image_caffe_scaled:size(2) .. ").")
 
 
   -- Loading network, inserting style and content loss modules
@@ -194,7 +205,7 @@ print("Processing image part #" .. fragment_counter .. " ([" .. fx .. ", " .. fy
       local layer = cnn:get(i)
       local name = layer.name
       local layer_type = torch.type(layer)
-      local is_dropout = (layer_type == 'nn.Dropout')
+      local is_dropout = (layer_type == 'nn.Dropout' or layer_type == 'nn.SpatialDropout')
       local is_pooling = (layer_type == 'cudnn.SpatialMaxPooling' or layer_type == 'nn.SpatialMaxPooling')
       if is_dropout then
         local msg = 'Removing dropout at layer %d'
@@ -427,27 +438,35 @@ end  -- fx
 
     img_row = nil
     if params.save_iter == 1 then
-      maybe_save(img, "_row["..fy.."]_combined.png")
+      maybe_save(img, "_s["..scalestring.."]-r["..fy.."].png")
     end
     collectgarbage()
 
 
 end  -- fy
 if params.save_iter == 1 then
-  maybe_save(img, "_scale["..scalecurrent.."].png")
+  maybe_save(img, "_s["..scalestring.."].png")
 end
 end -- iteration group
 end -- process_img()
 
 
-scaledown = 0.5 --0.5 1
-scaleup   = 2.0 --2.0 1
-scalesteps = 3
+scaledown  = params.scale_down  --0.5
+scaleup    = params.scale_up    --2.0
+scalesteps = params.scale_steps --3
 if (scaledown > scaleup) then
   scalecurrent = scaleup
   scaleup = scaledown
   scaledown = scalecurrent
 end
+if scalesteps < 2 then
+  if (scaleup / scaledown) > 2 then
+    scalesteps = math.ceil(math.log(scaleup / scaledown) / math.log(2))
+  else
+    scalesteps = 2
+  end
+end
+local scale_eps = 1e-10
 
 
   if params.init_image ~= '' then
@@ -473,11 +492,12 @@ end
 
 
 if (scaledown == 1.0) and (scaleup == 1.0) then
-  scalecurrent = 1
+  scalecurrent, scalestring = 1, "1.0"
   process_img()
 else
-  for scalelog = math.log(scaledown), math.log(scaleup), (math.log(scaleup) - math.log(scaledown)) / (scalesteps - 1) do
-    scalecurrent = math.exp(scalelog)
+  for scalelog = math.log(scaledown), math.log(scaleup) + scale_eps, (math.log(scaleup) - math.log(scaledown)) / (scalesteps - 1) do
+    scalecurrent = math.min(math.exp(scalelog), scaleup)
+    scalestring  = string.format('%0.03f', scalecurrent)
     local H, W = content_image:size(2) * scalecurrent, content_image:size(3) * scalecurrent
     img = image.scale(img, W, H, 'bilinear')
     if (scalecurrent ~= 1.0) then
