@@ -188,7 +188,7 @@ local img_row = torch.DoubleTensor(img:size(1), params.image_size, img:size(3))
 
 for fx = 1, math.max(1, img_clean:size(3) - overlap), params.image_size - overlap do
 fragment_counter = fragment_counter + 1
-print("Processing image part #" .. fragment_counter .. " ([" .. fx .. ", " .. fy .. "] of " .. content_image_caffe_scaled:size(3) .. "x" .. content_image_caffe_scaled:size(2) .. ").")
+print("Processing image part #" .. fragment_counter .. " ([" .. fx .. ", " .. fy .. "] of " .. content_image_caffe_scaled:size(3) .. "x" .. content_image_caffe_scaled:size(2) .. ", scaling factor " .. scalestring .. ").")
 
 
   -- Loading network, inserting style and content loss modules
@@ -461,7 +461,7 @@ if (scaledown > scaleup) then
 end
 if scalesteps < 2 then
   if (scaleup / scaledown) > 2 then
-    scalesteps = math.ceil(math.log(scaleup / scaledown) / math.log(2))
+    scalesteps = math.ceil(math.log(scaleup / scaledown) / math.log(2)) + 1
   else
     scalesteps = 2
   end
