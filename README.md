@@ -1,5 +1,30 @@
 # neural-style
 
+Attempt to implement "multi-resolution" variant.<br>
+Additional controlling options:
+- "-overlap_times"<br>
+How many "layers of fragments" to mix in final image. Processing is NxN times longer.
+
+- "-scale_down"<br>
+Start scaling factor. Can help to transfer larger style features.
+
+- "-scale_up"<br>
+Final scaling factor. How large resulting image should be.
+
+- "-scale_steps"<br>
+"In how many steps to upscale image. Leave 1 for automatic choice.
+
+- "-expand_small"<br>
+Expands small images to 'image_size' during processing. Needs testing, maybe is not useful at all.
+
+<br>
+
+--- 
+
+##### _Original description following._
+
+---
+
 This is a torch implementation of the paper [A Neural Algorithm of Artistic Style](http://arxiv.org/abs/1508.06576)
 by Leon A. Gatys, Alexander S. Ecker, and Matthias Bethge.
 
@@ -8,14 +33,17 @@ convolutional neural networks. Here's an example that maps the artistic style of
 [The Starry Night](https://en.wikipedia.org/wiki/The_Starry_Night)
 onto a night-time photograph of the Stanford campus:
 
-<img src="https://raw.githubusercontent.com/jcjohnson/neural-style/master/examples/inputs/starry_night_google.jpg" height="223px">
-<img src="https://raw.githubusercontent.com/jcjohnson/neural-style/master/examples/inputs/hoovertowernight.jpg" height="223px">
-<img src="https://raw.githubusercontent.com/jcjohnson/neural-style/master/examples/outputs/starry_stanford_bigger.png" width="710px">
+<div align="center">
+ <img src="https://raw.githubusercontent.com/jcjohnson/neural-style/master/examples/inputs/starry_night_google.jpg" height="223px">
+ <img src="https://raw.githubusercontent.com/jcjohnson/neural-style/master/examples/inputs/hoovertowernight.jpg" height="223px">
+ <img src="https://raw.githubusercontent.com/jcjohnson/neural-style/master/examples/outputs/starry_stanford_bigger.png" width="710px">
+</div>
 
 Applying the style of different images to the same content image gives interesting results.
 Here we reproduce Figure 2 from the paper, which renders a photograph of the Tubingen in Germany in a
 variety of styles:
 
+<div align="center">
 <img src="https://raw.githubusercontent.com/jcjohnson/neural-style/master/examples/inputs/tubingen.jpg" height="250px">
 <img src="https://raw.githubusercontent.com/jcjohnson/neural-style/master/examples/outputs/tubingen_shipwreck.png" height="250px">
 
@@ -24,39 +52,51 @@ variety of styles:
 
 <img src="https://raw.githubusercontent.com/jcjohnson/neural-style/master/examples/outputs/tubingen_seated_nude.png" height="250px">
 <img src="https://raw.githubusercontent.com/jcjohnson/neural-style/master/examples/outputs/tubingen_composition_vii.png" height="250px">
+</div>
 
 Here are the results of applying the style of various pieces of artwork to this photograph of the
 golden gate bridge:
 
+
+<div align="center"
 <img src="https://raw.githubusercontent.com/jcjohnson/neural-style/master/examples/inputs/golden_gate.jpg" height="200px">
 
 <img src="https://raw.githubusercontent.com/jcjohnson/neural-style/master/examples/inputs/frida_kahlo.jpg" height="160px">
 <img src="https://raw.githubusercontent.com/jcjohnson/neural-style/master/examples/outputs/golden_gate_kahlo.png" height="160px">
 <img src="https://raw.githubusercontent.com/jcjohnson/neural-style/master/examples/inputs/escher_sphere.jpg" height="160px">
 <img src="https://raw.githubusercontent.com/jcjohnson/neural-style/master/examples/outputs/golden_gate_escher.png" height="160px">
+</div>
 
+<div align="center">
 <img src="https://raw.githubusercontent.com/jcjohnson/neural-style/master/examples/inputs/woman-with-hat-matisse.jpg" height="160px">
 <img src="https://raw.githubusercontent.com/jcjohnson/neural-style/master/examples/outputs/golden_gate_matisse.png" height="160px">
 <img src="https://raw.githubusercontent.com/jcjohnson/neural-style/master/examples/inputs/the_scream.jpg" height="160px">
 <img src="https://raw.githubusercontent.com/jcjohnson/neural-style/master/examples/outputs/golden_gate_scream.png" height="160px">
+</div>
 
+<div align="center">
 <img src="https://raw.githubusercontent.com/jcjohnson/neural-style/master/examples/inputs/starry_night_crop.png" height="160px">
 <img src="https://raw.githubusercontent.com/jcjohnson/neural-style/master/examples/outputs/golden_gate_starry.png" height="160px">
 <img src="https://raw.githubusercontent.com/jcjohnson/neural-style/master/examples/inputs/seated-nude.jpg" height="160px">
 <img src="https://raw.githubusercontent.com/jcjohnson/neural-style/master/examples/outputs/golden_gate_seated.png" height="160px">
+</div>
 
 ### Content / Style Tradeoff
 
 The algorithm allows the user to trade-off the relative weight of the style and content reconstruction terms,
 as shown in this example where we port the style of [Picasso's 1907 self-portrait](http://www.wikiart.org/en/pablo-picasso/self-portrait-1907) onto Brad Pitt:
 
+<div align="center">
 <img src="https://raw.githubusercontent.com/jcjohnson/neural-style/master/examples/inputs/picasso_selfport1907.jpg" height="220px">
 <img src="https://raw.githubusercontent.com/jcjohnson/neural-style/master/examples/inputs/brad_pitt.jpg" height="220px">
+</div>
 
+<div align="center">
 <img src="https://raw.githubusercontent.com/jcjohnson/neural-style/master/examples/outputs/pitt_picasso_content_5_style_10.png" height="220px">
 <img src="https://raw.githubusercontent.com/jcjohnson/neural-style/master/examples/outputs/pitt_picasso_content_1_style_10.png" height="220px">
 <img src="https://raw.githubusercontent.com/jcjohnson/neural-style/master/examples/outputs/pitt_picasso_content_01_style_10.png" height="220px">
 <img src="https://raw.githubusercontent.com/jcjohnson/neural-style/master/examples/outputs/pitt_picasso_content_0025_style_10.png" height="220px">
+</div>
 
 ### Style Scale
 
@@ -65,9 +105,11 @@ features that are transfered from the style image; you can control this behavior
 Below we see three examples of rendering the Golden Gate Bridge in the style of The Starry Night.
 From left to right, `-style_scale` is 2.0, 1.0, and 0.5.
 
+<div align="center">
 <img src="https://raw.githubusercontent.com/jcjohnson/neural-style/master/examples/outputs/golden_gate_starry_scale2.png" height=175px>
 <img src="https://raw.githubusercontent.com/jcjohnson/neural-style/master/examples/outputs/golden_gate_starry_scale1.png" height=175px>
 <img src="https://raw.githubusercontent.com/jcjohnson/neural-style/master/examples/outputs/golden_gate_starry_scale05.png" height=175px>
+</div>
 
 ### Multiple Style Images
 You can use more than one style image to blend multiple artistic styles.
@@ -75,26 +117,30 @@ You can use more than one style image to blend multiple artistic styles.
 Clockwise from upper left: "The Starry Night" + "The Scream", "The Scream" + "Composition VII",
 "Seated Nude" + "Composition VII", and "Seated Nude" + "The Starry Night"
 
+<div align="center">
 <img src="https://raw.githubusercontent.com/jcjohnson/neural-style/master/examples/outputs/tubingen_starry_scream.png" height="250px">
 <img src="https://raw.githubusercontent.com/jcjohnson/neural-style/master/examples/outputs/tubingen_scream_composition_vii.png" height="250px">
 
 <img src="https://raw.githubusercontent.com/jcjohnson/neural-style/master/examples/outputs/tubingen_starry_seated.png" height="250px">
 <img src="https://raw.githubusercontent.com/jcjohnson/neural-style/master/examples/outputs/tubingen_seated_nude_composition_vii.png" height="250px">
-
+</div>
 
 
 ### Style Interpolation
 When using multiple style images, you can control the degree to which they are blended:
 
+<div align="center">
 <img src="https://raw.githubusercontent.com/jcjohnson/neural-style/master/examples/outputs/golden_gate_starry_scream_3_7.png" height="175px">
 <img src="https://raw.githubusercontent.com/jcjohnson/neural-style/master/examples/outputs/golden_gate_starry_scream_5_5.png" height="175px">
 <img src="https://raw.githubusercontent.com/jcjohnson/neural-style/master/examples/outputs/golden_gate_starry_scream_7_3.png" height="175px">
+</div>
 
 
 ### Transfer style but not color
 If you add the flag `-original_colors 1` then the output image will retain the colors of the original image;
 this is similar to [the recent blog post by deepart.io](http://blog.deepart.io/2016/06/04/color-independent-style-transfer/).
 
+<div align="center">
 <img src="https://raw.githubusercontent.com/jcjohnson/neural-style/master/examples/outputs/tubingen_starry.png" height="185px">
 <img src="https://raw.githubusercontent.com/jcjohnson/neural-style/master/examples/outputs/tubingen_scream.png" height="185px">
 <img src="https://raw.githubusercontent.com/jcjohnson/neural-style/master/examples/outputs/tubingen_composition_vii.png" height="185px">
@@ -102,7 +148,7 @@ this is similar to [the recent blog post by deepart.io](http://blog.deepart.io/2
 <img src="https://raw.githubusercontent.com/jcjohnson/neural-style/master/examples/outputs/original_color/tubingen_starry.png" height="185px">
 <img src="https://raw.githubusercontent.com/jcjohnson/neural-style/master/examples/outputs/original_color/tubingen_scream.png" height="185px">
 <img src="https://raw.githubusercontent.com/jcjohnson/neural-style/master/examples/outputs/original_color/tubingen_composition_vii.png" height="185px">
-
+</div>
 
 ## Setup:
 
