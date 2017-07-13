@@ -132,6 +132,70 @@ local function main(params)
   local style_layers = params.style_layers:split(",")
 
 
+  -- Loading network, inserting style and content loss modules
+  local cnn = loadcaffe.load(params.proto_file, params.model_file, loadcaffe_backend):type(dtype)
+  local next_content_idx, next_style_idx = 1, 1
+  local net_clean = nn.Sequential()
+  if params.tv_weight > 0 then
+    local tv_mod = nn.TVLoss(params.tv_weight):type(dtype)
+    net_clean:add(tv_mod)
+  end
+  for i = 1, #cnn do
+    if next_content_idx <= #content_layers or next_style_idx <= #style_layers then
+      local layer = cnn:get(i)
+      local name = layer.name
+      local layer_type = torch.type(layer)
+      local is_dropout = (layer_type == 'nn.Dropout' or layer_type == 'nn.SpatialDropout')
+      local is_pooling = (layer_type == 'cudnn.SpatialMaxPooling' or layer_type == 'nn.SpatialMaxPooling')
+      if is_dropout then
+        local msg = 'Removing dropout at layer %d'
+        print(string.format(msg, i))
+      elseif is_pooling and params.pooling == 'avg' then
+        assert(layer.padW == 0 and layer.padH == 0)
+        local kW, kH = layer.kW, layer.kH
+        local dW, dH = layer.dW, layer.dH
+        local avg_pool_layer = nn.SpatialAveragePooling(kW, kH, dW, dH):type(dtype)
+        local msg = 'Replacing max pooling at layer %d with average pooling'
+        print(string.format(msg, i))
+        net_clean:add(avg_pool_layer)
+      else
+        net_clean:add(layer)
+      end
+      if name == content_layers[next_content_idx] then
+        print("Setting up content layer", i, ":", layer.name)
+        local norm = params.normalize_gradients
+        local loss_module = nn.ContentLoss(params.content_weight, norm):type(dtype)
+        net_clean:add(loss_module)
+        next_content_idx = next_content_idx + 1
+      end
+      if name == style_layers[next_style_idx] then
+        print("Setting up style layer  ", i, ":", layer.name)
+        local norm = params.normalize_gradients
+        local loss_module = nn.StyleLoss(params.style_weight, norm):type(dtype)
+        net_clean:add(loss_module)
+        next_style_idx = next_style_idx + 1
+      end
+    end
+  end
+  if multigpu then
+    net_clean = setup_multi_gpu(net_clean, params)
+  end
+--  net_clean:type(dtype)
+
+  -- We don't need the base CNN anymore, so clean it up to save memory.
+  cnn = nil
+  for i=1, #net_clean.modules do
+    local module = net_clean.modules[i]
+    if torch.type(module) == 'nn.SpatialConvolutionMM' then
+        -- remove these, not used, but uses gpu memory
+        module.gradWeight = nil
+        module.gradBias = nil
+    end
+  end
+  collectgarbage()
+  print(net_clean)
+
+
   local scaledown, scaleup, scalesteps, scalecurrent, scalestring
   local cur_iter = 0
   local img = nil
@@ -191,70 +255,22 @@ fragment_counter = fragment_counter + 1
 print("Processing image part #" .. fragment_counter .. " ([" .. fx .. ", " .. fy .. "] of " .. content_image_caffe_scaled:size(3) .. "x" .. content_image_caffe_scaled:size(2) .. ", scaling factor " .. scalestring .. ").")
 
 
-  -- Loading network, inserting style and content loss modules
-  local cnn = loadcaffe.load(params.proto_file, params.model_file, loadcaffe_backend):type(dtype)
-  local content_losses, style_losses = {}, {}
-  local next_content_idx, next_style_idx = 1, 1
-  local net = nn.Sequential()
-  if params.tv_weight > 0 then
-    local tv_mod = nn.TVLoss(params.tv_weight):type(dtype)
-    net:add(tv_mod)
-  end
-  for i = 1, #cnn do
-    if next_content_idx <= #content_layers or next_style_idx <= #style_layers then
-      local layer = cnn:get(i)
-      local name = layer.name
-      local layer_type = torch.type(layer)
-      local is_dropout = (layer_type == 'nn.Dropout' or layer_type == 'nn.SpatialDropout')
-      local is_pooling = (layer_type == 'cudnn.SpatialMaxPooling' or layer_type == 'nn.SpatialMaxPooling')
-      if is_dropout then
-        local msg = 'Removing dropout at layer %d'
-        print(string.format(msg, i))
-      elseif is_pooling and params.pooling == 'avg' then
-        assert(layer.padW == 0 and layer.padH == 0)
-        local kW, kH = layer.kW, layer.kH
-        local dW, dH = layer.dW, layer.dH
-        local avg_pool_layer = nn.SpatialAveragePooling(kW, kH, dW, dH):type(dtype)
-        local msg = 'Replacing max pooling at layer %d with average pooling'
-        print(string.format(msg, i))
-        net:add(avg_pool_layer)
-      else
-        net:add(layer)
-      end
-      if name == content_layers[next_content_idx] then
-        print("Setting up content layer", i, ":", layer.name)
-        local norm = params.normalize_gradients
-        local loss_module = nn.ContentLoss(params.content_weight, norm):type(dtype)
-        net:add(loss_module)
-        table.insert(content_losses, loss_module)
-        next_content_idx = next_content_idx + 1
-      end
-      if name == style_layers[next_style_idx] then
-        print("Setting up style layer  ", i, ":", layer.name)
-        local norm = params.normalize_gradients
-        local loss_module = nn.StyleLoss(params.style_weight, norm):type(dtype)
-        net:add(loss_module)
-        table.insert(style_losses, loss_module)
-        next_style_idx = next_style_idx + 1
-      end
-    end
-  end
-  if multigpu then
-    net = setup_multi_gpu(net, params)
-  end
-  net:type(dtype)
+    -- Replicating network
+    print("Resetting network.")
+    local net = net_clean:clone()
+    net:type(dtype)
 
-  -- We don't need the base CNN anymore, so clean it up to save memory.
-  cnn = nil
-  for i=1, #net.modules do
-    local module = net.modules[i]
-    if torch.type(module) == 'nn.SpatialConvolutionMM' then
-        -- remove these, not used, but uses gpu memory
-        module.gradWeight = nil
-        module.gradBias = nil
+  local content_losses, style_losses = {}, {}
+  for i = 1, #net do
+    local layer = net:get(i)
+    local layer_type = torch.type(layer)
+    if (layer_type == 'nn.ContentLoss') then
+      table.insert(content_losses, layer)
+    end
+    if (layer_type == 'nn.StyleLoss') then
+      table.insert(style_losses, layer)
     end
   end
-  collectgarbage()
 
 
     -- Loading parts of content image, scaled to current resolution
@@ -269,7 +285,6 @@ print("Processing image part #" .. fragment_counter .. " ([" .. fx .. ", " .. fy
     content_losses[i].mode = 'capture'
   end
   print 'Capturing content targets'
-  print(net)
 --  content_image_caffe = content_image_caffe:type(dtype)
   net:forward(content_fragment:type(dtype))
 
@@ -405,7 +420,7 @@ print("Processing image part #" .. fragment_counter .. " ([" .. fx .. ", " .. fy
     end
 
 
-  net, cnn = nil, nil
+  net = nil
   content_losses, style_losses = nil, nil
   collectgarbage()
 end  -- fx
