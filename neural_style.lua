@@ -506,23 +506,29 @@ local scale_eps = 1e-10
   img = img:type(dtype)
 
 
-if (scaledown == 1.0) and (scaleup == 1.0) then
-  scalecurrent, scalestring = 1, "1.0"
-  process_img()
-else
-  for scalelog = math.log(scaledown), math.log(scaleup) + scale_eps, (math.log(scaleup) - math.log(scaledown)) / (scalesteps - 1) do
+  scalecurrent = (math.log(scaleup) - math.log(scaledown)) / (scalesteps - 1)
+  if scalecurrent == 0 then
+    scalecurrent = 1
+    scalesteps = "simple scaling."
+  else
+    scalesteps = scalesteps .. "-step scaling."
+  end
+print( "Scale: " .. scaledown .. "-" .. scaleup .. ", " .. scalesteps )
+--print( math.log(scaledown), math.log(scaleup) + scale_eps, scalecurrent )
+  for scalelog = math.log(scaledown), math.log(scaleup) + scale_eps, scalecurrent do
     scalecurrent = math.min(math.exp(scalelog), scaleup)
     scalestring  = string.format('%0.03f', scalecurrent)
     local H, W = content_image:size(2) * scalecurrent, content_image:size(3) * scalecurrent
     img = image.scale(img, W, H, 'bilinear')
-    if (scalecurrent ~= 1.0) then
+    if (scalecurrent > 1.0) then
+      content_image_caffe_scaled = img:clone()
+    elseif (scalecurrent < 1.0) then
       content_image_caffe_scaled = image.scale(content_image_caffe, W, H, 'bilinear')
     else
       content_image_caffe_scaled = content_image_caffe
     end
     process_img()
   end
-end
 
 
 maybe_save(img, "")
