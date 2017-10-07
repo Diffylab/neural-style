@@ -469,6 +469,15 @@ end -- process_img()
 scaledown  = params.scale_down  --0.5
 scaleup    = params.scale_up    --2.0
 scalesteps = params.scale_steps --3
+
+local scale_eps = 1e-10
+if scaledown < 0 then
+  scaledown = -scaledown / math.max(content_image:size(2), content_image:size(3)) + scale_eps
+end
+if scaleup < 0 then
+  scaleup = -scaleup / math.max(content_image:size(2), content_image:size(3)) + scale_eps
+end
+
 if (scaledown > scaleup) then
   scalecurrent = scaleup
   scaleup = scaledown
@@ -481,7 +490,6 @@ if scalesteps < 2 then
     scalesteps = 2
   end
 end
-local scale_eps = 1e-10
 
 
   if params.init_image ~= '' then
@@ -518,7 +526,7 @@ print( "Scale: " .. scaledown .. "-" .. scaleup .. ", " .. scalesteps )
   for scalelog = math.log(scaledown), math.log(scaleup) + scale_eps, scalecurrent do
     scalecurrent = math.min(math.exp(scalelog), scaleup)
     scalestring  = string.format('%0.03f', scalecurrent)
-    local H, W = content_image:size(2) * scalecurrent, content_image:size(3) * scalecurrent
+    local H, W = math.max(math.floor(content_image:size(2) * scalecurrent), 1), math.max(math.floor(content_image:size(3) * scalecurrent), 1)
     img = image.scale(img, W, H, 'bilinear')
     if (scalecurrent > 1.0) then
       content_image_caffe_scaled = img:clone()
