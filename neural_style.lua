@@ -246,13 +246,16 @@ for iter_group = 1, params.num_iterations, sub_iter do
   -- Processing fragments
 local img_clean = img:clone()
 local fragment_counter = 0
+local fragments_total = math.ceil(math.max(1, img_clean:size(2) - overlap) / (params.image_size - overlap)) *
+                        math.ceil(math.max(1, img_clean:size(3) - overlap) / (params.image_size - overlap)) -- ceil((b-a+1)/step)
+
 for fy = 1, math.max(1, img_clean:size(2) - overlap), params.image_size - overlap do
 
 local img_row = torch.DoubleTensor(img:size(1), params.image_size, img:size(3))
 
 for fx = 1, math.max(1, img_clean:size(3) - overlap), params.image_size - overlap do
 fragment_counter = fragment_counter + 1
-print("Processing image part #" .. fragment_counter .. " ([" .. fx .. ", " .. fy .. "] of " .. content_image_caffe_scaled:size(3) .. "x" .. content_image_caffe_scaled:size(2) .. ", scaling factor " .. scalestring .. ").")
+print("Processing image part #" .. fragment_counter .. " of " .. fragments_total .. " ([" .. fx .. ", " .. fy .. "] of " .. content_image_caffe_scaled:size(3) .. "x" .. content_image_caffe_scaled:size(2) .. ", scaling factor " .. scalestring .. ").")
 
 
     -- Replicating network
