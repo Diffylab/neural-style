@@ -285,7 +285,6 @@ print("Processing image part #" .. fragment_counter .. " ([" .. fx .. ", " .. fy
     content_losses[i].mode = 'capture'
   end
   print 'Capturing content targets'
---  content_image_caffe = content_image_caffe:type(dtype)
   net:forward(content_fragment:type(dtype))
 
   -- Capture style targets
@@ -527,14 +526,15 @@ print( "Scale: " .. scaledown .. "-" .. scaleup .. ", " .. scalesteps )
     scalecurrent = math.min(math.exp(scalelog), scaleup)
     scalestring  = string.format('%0.03f', scalecurrent)
     local H, W = math.max(math.floor(content_image:size(2) * scalecurrent), 1), math.max(math.floor(content_image:size(3) * scalecurrent), 1)
-    img = image.scale(img, W, H, 'bilinear')
+    img = image.scale(img:double(), W, H, 'bilinear')
     if (scalecurrent > 1.0) then
-      content_image_caffe_scaled = img:clone()
+      content_image_caffe_scaled = img:clone():float()
     elseif (scalecurrent < 1.0) then
       content_image_caffe_scaled = image.scale(content_image_caffe, W, H, 'bilinear')
-    else
+    else -- no scaling
       content_image_caffe_scaled = content_image_caffe
     end
+    img = img:type(dtype)
     process_img()
   end
 
