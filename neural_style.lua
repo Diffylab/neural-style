@@ -216,7 +216,8 @@ local function main(params)
   cnn = nil
   for i = 1, #net_clean.modules do
     local module = net_clean.modules[i]
-    if torch.type(module) == 'nn.SpatialConvolutionMM' then
+    local t = torch.type(module)
+    if (t == 'nn.SpatialConvolutionMM' or t == 'nn.SpatialConvolution') then
         -- remove these, not used, but uses gpu memory
         module.gradWeight = nil
         module.gradBias = nil
