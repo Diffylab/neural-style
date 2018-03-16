@@ -67,7 +67,6 @@ local function main(params)
 
   -- Loading images
   local content_image = image.load(params.content_image, 3)
---  content_image = image.scale(content_image, params.image_size, 'bilinear')
   local content_image_caffe = preprocess(content_image):float()
 
   local style_size = math.ceil(params.style_scale * params.image_size)
@@ -104,6 +103,37 @@ local function main(params)
     return part:clone()
   end
 
+  local function image_overlay(full_image, part, x, y, overlap)  -- Coordinates are 1...w/h
+    local fragment_size = params.image_size
+    -- Making mask for full fragment
+    local og = torch.linspace(0, 1, overlap + 2)[{{2, -2}}]
+    local xb = og:view(1, -1):expand(fragment_size, overlap)
+    local yb = xb:t()
+    local mask = torch.ones(fragment_size, fragment_size)
+    if overlap > 0 then
+      if x > 1 then
+        mask[{{}, {1, overlap}}] = xb
+      end
+      if y > 1 then
+        if x > 1 then
+          mask[{{1, overlap}, {}}] = torch.cmin(mask[{{1, overlap}, {}}], yb)
+        else
+          mask[{{1, overlap}, {}}] = yb
+        end
+      end
+    end
+    -- Cropping
+    local iw, ih = full_image:size(3), full_image:size(2)
+    local pw, ph = math.min(part:size(3), iw - x + 1), math.min(part:size(2), ih - y + 1)
+    local front = part[{{}, {1, ph}, {1, pw}}]:double()
+    local back = full_image[{{}, {y, y + ph - 1}, {x, x + pw - 1}}]:double()
+    mask = mask[{{1, ph}, {1, pw}}]:contiguous():view(1, ph, pw):expand(front:size()) --:contiguous()
+    -- Combining
+    local comb = torch.cmul(front, mask):add(torch.cmul(back, 1 - mask)):type(full_image:type())
+    full_image[{{}, {y, y + ph - 1}, {x, x + pw - 1}}] = comb
+    return full_image:contiguous()
+  end
+
 
   -- Handle style blending weights for multiple style inputs
   local style_blend_weights = nil
@@ -116,7 +146,7 @@ local function main(params)
   else
     style_blend_weights = params.style_blend_weights:split(',')
     assert(#style_blend_weights == #style_image_list,
-      '-style_blend_weights and -style_images must have the same number of elements')
+           '-style_blend_weights and -style_images must have the same number of elements')
   end
   -- Normalize the style blending weights so they sum to 1
   local style_blend_sum = 0
@@ -184,7 +214,7 @@ local function main(params)
 
   -- We don't need the base CNN anymore, so clean it up to save memory.
   cnn = nil
-  for i=1, #net_clean.modules do
+  for i = 1, #net_clean.modules do
     local module = net_clean.modules[i]
     if torch.type(module) == 'nn.SpatialConvolutionMM' then
         -- remove these, not used, but uses gpu memory
@@ -208,291 +238,266 @@ local function main(params)
     should_save = should_save or cur_iter >= params.num_iterations
     if should_save then
       local disp = deprocess(i:double())
-      disp = image.minmax{tensor=disp, min=0, max=1}
+      disp = image.minmax{tensor = disp, min = 0, max = 1}
       local filename = build_filename(params.output_image, cur_iter)
       if cur_iter == params.num_iterations then
         filename = params.output_image
       end
-
       -- Maybe perform postprocessing for color-independent style transfer
       if params.original_colors == 1 then
         disp = original_colors(content_image, disp)
       end
-
       image.save(filename .. appendix, disp)
     end
   end
 
 
-local function process_img() -- img shoud be initialized
+  local function process_img() -- img shoud be initialized
 
+    local overlap_times = params.overlap_times -- Processing is squared times longer
+    local sub_iter = math.ceil(params.num_iterations / 3)  --math.ceil(math.sqrt(params.num_iterations))  --30
+    local overlap = math.floor(params.image_size * (overlap_times - 1) / overlap_times)
 
-  local overlap_times = params.overlap_times -- Processing is squared times longer
-
-
-  local sub_iter = math.ceil(params.num_iterations / 3)  --math.ceil(math.sqrt(params.num_iterations))  --30
-  local overlap = math.floor(params.image_size * (overlap_times - 1) / overlap_times)
-
-  if params.optimizer == 'lbfgs' then
-    print('Running optimization with L-BFGS')
-  elseif params.optimizer == 'adam' then
-    print('Running optimization with ADAM')
-  else
-    error(string.format('Unrecognized optimizer "%s"', params.optimizer))
-  end
-
-for iter_group = 1, params.num_iterations, sub_iter do
-
-  -- Processing fragments
-local img_clean = img:clone()
-local fragment_counter = 0
-local fragments_total = math.ceil(math.max(1, img_clean:size(2) - overlap) / (params.image_size - overlap)) *
-                        math.ceil(math.max(1, img_clean:size(3) - overlap) / (params.image_size - overlap)) -- ceil((b-a+1)/step)
-
-for fy = 1, math.max(1, img_clean:size(2) - overlap), params.image_size - overlap do
-
-local img_row = torch.DoubleTensor(img:size(1), params.image_size, img:size(3))
-
-for fx = 1, math.max(1, img_clean:size(3) - overlap), params.image_size - overlap do
-fragment_counter = fragment_counter + 1
-print("Processing image part #" .. fragment_counter .. " of " .. fragments_total .. " ([" .. fx .. ", " .. fy .. "] of " .. content_image_caffe_scaled:size(3) .. "x" .. content_image_caffe_scaled:size(2) .. ", scaling factor " .. scalestring .. ").")
-
-
-    -- Replicating network
-    print("Resetting network.")
-    local net = net_clean:clone()
-    net:type(dtype)
-
-  local content_losses, style_losses = {}, {}
-  for i = 1, #net do
-    local layer = net:get(i)
-    local layer_type = torch.type(layer)
-    if (layer_type == 'nn.ContentLoss') then
-      table.insert(content_losses, layer)
-    end
-    if (layer_type == 'nn.StyleLoss') then
-      table.insert(style_losses, layer)
-    end
-  end
-
-
-    -- Loading parts of content image, scaled to current resolution
-    local content_fragment = image_part(content_image_caffe_scaled, fx, fy, params.image_size)
-
-
-  -- Capture content targets
-  for i = 1, #style_losses do
-    style_losses[i].mode = 'none'
-  end
-  for i = 1, #content_losses do
-    content_losses[i].mode = 'capture'
-  end
-  print 'Capturing content targets'
-  net:forward(content_fragment:type(dtype))
-
-  -- Capture style targets
-  for i = 1, #content_losses do
-    content_losses[i].mode = 'none'
-  end
-  for i = 1, #style_images_caffe do
-    print(string.format('Capturing style target %d', i))
-    for j = 1, #style_losses do
-      style_losses[j].mode = 'capture'
-      style_losses[j].blend_weight = style_blend_weights[i]
-    end
-    net:forward(style_images_caffe[i]:type(dtype))
-  end
-
-  -- Set all loss modules to loss mode
-  for i = 1, #content_losses do
-    content_losses[i].mode = 'loss'
-  end
-  for i = 1, #style_losses do
-    style_losses[i].mode = 'loss'
-  end
-
-
-    -- Loading parts of working image (processed in previous iterations)
-    local img_fragment = image_part(img_clean, fx, fy, params.image_size):type(dtype)
-
-
-  -- Run it through the network once to get the proper size for the gradient
-  -- All the gradients will come from the extra loss modules, so we just pass
-  -- zeros into the top of the net on the backward pass.
-  local y = net:forward(img_fragment)
-  local dy = img_fragment.new(#y):zero()
-
-  -- Declaring this here lets us access it in maybe_print
-  local optim_state = nil
-
-  local function maybe_print(loss)
-    local verbose = (params.print_iter > 0 and cur_iter % params.print_iter == 0)
-    if verbose then
-      print(string.format('Iteration %d / %d', cur_iter, params.num_iterations))
-      for i, loss_module in ipairs(content_losses) do
-        print(string.format('  Content %d loss: %f', i, loss_module.loss))
-      end
-      for i, loss_module in ipairs(style_losses) do
-        print(string.format('  Style %d loss: %f', i, loss_module.loss))
-      end
-      print(string.format('  Total loss: %f', loss))
-    end
-  end
-
-  -- Function to evaluate loss and gradient. We run the net forward and
-  -- backward to get the gradient, and sum up losses from the loss modules.
-  -- optim.lbfgs internally handles iteration and calls this function many
-  -- times, so we manually count the number of iterations to handle printing
-  -- and saving intermediate results.
-  local function feval(x)
-    net:forward(x)
-    local grad = net:updateGradInput(x, dy)
-    local loss = 0
-    for _, mod in ipairs(content_losses) do
-      loss = loss + mod.loss
-    end
-    for _, mod in ipairs(style_losses) do
-      loss = loss + mod.loss
-    end
-    maybe_print(loss)
-
-    collectgarbage()
-    -- optim.lbfgs expects a vector for gradients
-    return loss, grad:view(grad:nElement())
-  end
-
-
-  -- Run optimization
-  if params.optimizer == 'lbfgs' then
-    optim_state = {
-      maxIter = 1,
-      verbose=false,
-      tolX=-1,
-      tolFun=-1,
-    }
-    if params.lbfgs_num_correction > 0 then
-      optim_state.nCorrection = params.lbfgs_num_correction
-    end
-  elseif params.optimizer == 'adam' then
-    optim_state = {
-      learningRate = params.learning_rate,
-    }
-  else
-    error(string.format('Unrecognized optimizer "%s"', params.optimizer))
-  end
-
-  for si = 0, sub_iter - 1 do
-    cur_iter = iter_group + si
     if params.optimizer == 'lbfgs' then
-      local x, losses = optim.lbfgs(feval, img_fragment, optim_state)
+      print('Running optimization with L-BFGS')
     elseif params.optimizer == 'adam' then
-      local x, losses = optim.adam(feval, img_fragment, optim_state)
-    end
-    if cur_iter >= params.num_iterations then break end
-  end -- sub-iteration
-
-
-    -- Making full row of fragments
---    if params.save_iter == 1 then
---      maybe_save(img_fragment, "_fragment["fx..","..fy.."]_processed.png")
---    end
-
-    if (overlap > 0) and (fx > 1) then
-      local fragment_size = params.image_size
-      local iw, ih = img:size(3), img:size(2)
-      local mw, mh = math.min(overlap, iw - fx + 1), math.min(fragment_size, ih - fy + 1)
-      local xmask = torch.linspace(0, 1, overlap + 2)[{{2, -2}}]:view(1, 1, -1):expand(img_row:size(1), mh, overlap)
-      -- Cropping
-      local front = img_fragment[{{}, {1, mh}, {1, mw}}]:double()
-      local back = img_row[{{}, {1, mh}, {fx, fx + mw - 1}}]:double()
-      xmask = xmask[{{}, {}, {1, mw}}] --:contiguous()
-      -- Combining
-      img_row[{{}, {1, mh}, {fx, fx + mw - 1}}] = torch.cmul(front, xmask):add(torch.cmul(back, 1 - xmask)):type(img_row:type())
-      local cw = math.min(fragment_size, iw - fx + 1) - overlap
-      if cw > 0 then
-        img_row[{{}, {1, mh}, {fx + overlap, fx + overlap + cw - 1}}] = img_fragment[{{}, {1, mh}, {1 + overlap, overlap + cw}}]:type(img_row:type())
-      end
+      print('Running optimization with ADAM')
     else
-      local fragment_size = params.image_size
-      local iw, ih = img:size(3), img:size(2)
-      local cw, ch = math.min(fragment_size, iw - fx + 1), math.min(fragment_size, ih - fy + 1)
-      if cw > 0 then
-        img_row[{{}, {1, ch}, {fx, fx + cw - 1}}] = img_fragment[{{}, {1, ch}, {1, cw}}]:type(img_row:type())
-      end
+      error(string.format('Unrecognized optimizer "%s"', params.optimizer))
     end
 
+    for iter_group = 1, params.num_iterations, sub_iter do
+      -- Processing fragments
+      local img_clean = img:clone()
+      local fragment_counter = 0
+      local fragments_total = math.ceil(math.max(1, img_clean:size(2) - overlap) / (params.image_size - overlap)) *
+                              math.ceil(math.max(1, img_clean:size(3) - overlap) / (params.image_size - overlap)) -- ceil((b-a+1)/step)
+      for fy = 1, math.max(1, img_clean:size(2) - overlap), params.image_size - overlap do
+        local img_row = torch.DoubleTensor(img:size(1), params.image_size, img:size(3))
+        for fx = 1, math.max(1, img_clean:size(3) - overlap), params.image_size - overlap do
+          fragment_counter = fragment_counter + 1
+          print("Processing image part #" .. fragment_counter .. " of " .. fragments_total .. " ([" .. fx .. ", " .. fy .. "] of " .. content_image_caffe_scaled:size(3) .. "x" .. content_image_caffe_scaled:size(2) .. ", scaling factor " .. scalestring .. ").")
 
-  net = nil
-  content_losses, style_losses = nil, nil
-  collectgarbage()
-end  -- fx
+          -- Replicating network
+          print("Resetting network.")
+          local net = net_clean:clone():type(dtype)
+          local content_losses, style_losses = {}, {}
+          for i = 1, #net do
+            local layer = net:get(i)
+            local layer_type = torch.type(layer)
+            if (layer_type == 'nn.ContentLoss') then
+              table.insert(content_losses, layer)
+            end
+            if (layer_type == 'nn.StyleLoss') then
+              table.insert(style_losses, layer)
+            end
+          end
 
+          -- Loading parts of content image, scaled to current resolution
+          local content_fragment = image_part(content_image_caffe_scaled, fx, fy, params.image_size)
 
-    -- Placing row to image
-    if (overlap > 0) and (fy > 1) then
-      local iw, ih = img:size(3), img:size(2)
-      local mw, mh = img_row:size(3), math.min(overlap, ih - fy + 1)
-      local ymask = torch.linspace(0, 1, overlap + 2)[{{2, -2}}]:view(1, -1, 1):expand(img_row:size(1), overlap, mw)
-      -- Cropping
-      local front = img_row[{{}, {1, mh}, {}}]:double()
-      local back = img[{{}, {fy, fy + mh - 1}, {}}]:double()
-      ymask = ymask[{{}, {1, mh}, {}}] --:contiguous()
-      -- Combining
-      img[{{}, {fy, fy + mh - 1}, {}}] = torch.cmul(front, ymask):add(torch.cmul(back, 1 - ymask)):type(img:type())
-      local ch = math.min(img_row:size(2), ih - fy + 1) - overlap
-      if ch > 0 then
-        img[{{}, {fy + overlap, fy + overlap + ch - 1}, {}}] = img_row[{{}, {overlap + 1, overlap + ch}, {}}]:type(img:type())
+          -- Capture content targets
+          for i = 1, #style_losses do
+            style_losses[i].mode = 'none'
+          end
+          for i = 1, #content_losses do
+            content_losses[i].mode = 'capture'
+          end
+          print 'Capturing content targets'
+          net:forward(content_fragment:type(dtype))
+          -- Capture style targets
+          for i = 1, #content_losses do
+            content_losses[i].mode = 'none'
+          end
+          for i = 1, #style_images_caffe do
+            print(string.format('Capturing style target %d', i))
+            for j = 1, #style_losses do
+              style_losses[j].mode = 'capture'
+              style_losses[j].blend_weight = style_blend_weights[i]
+            end
+            net:forward(style_images_caffe[i]:type(dtype))
+          end
+          -- Set all loss modules to loss mode
+          for i = 1, #content_losses do
+            content_losses[i].mode = 'loss'
+          end
+          for i = 1, #style_losses do
+            style_losses[i].mode = 'loss'
+          end
+
+          -- Loading parts of work image (processed in previous iterations)
+          local img_fragment = image_part(img_clean, fx, fy, params.image_size):type(dtype)
+
+          -- Run it through the network once to get the proper size for the gradient
+          -- All the gradients will come from the extra loss modules, so we just pass
+          -- zeros into the top of the net on the backward pass.
+          local y = net:forward(img_fragment)
+          local dy = img_fragment.new(#y):zero()
+
+          -- Declaring this here lets us access it in maybe_print
+          local optim_state = nil
+
+          local function maybe_print(loss)
+            local verbose = (params.print_iter > 0 and cur_iter % params.print_iter == 0)
+            if verbose then
+              print(string.format('Iteration %d / %d', cur_iter, params.num_iterations))
+              for i, loss_module in ipairs(content_losses) do
+                print(string.format('  Content %d loss: %f', i, loss_module.loss))
+              end
+              for i, loss_module in ipairs(style_losses) do
+                print(string.format('  Style %d loss: %f', i, loss_module.loss))
+              end
+              print(string.format('  Total loss: %f', loss))
+            end
+          end
+
+          -- Function to evaluate loss and gradient. We run the net forward and
+          -- backward to get the gradient, and sum up losses from the loss modules.
+          -- optim.lbfgs internally handles iteration and calls this function many
+          -- times, so we manually count the number of iterations to handle printing
+          -- and saving intermediate results.
+          local function feval(x)
+            net:forward(x)
+            local grad = net:updateGradInput(x, dy)
+            local loss = 0
+            for _, mod in ipairs(content_losses) do
+              loss = loss + mod.loss
+            end
+            for _, mod in ipairs(style_losses) do
+              loss = loss + mod.loss
+            end
+            maybe_print(loss)
+            collectgarbage()
+            -- optim.lbfgs expects a vector for gradients
+            return loss, grad:view(grad:nElement())
+          end
+
+          -- Run optimization
+          if params.optimizer == 'lbfgs' then
+            optim_state = {
+              maxIter = 1,
+              verbose=false,
+              tolX=-1,
+              tolFun=-1,
+            }
+            if params.lbfgs_num_correction > 0 then
+              optim_state.nCorrection = params.lbfgs_num_correction
+            end
+          elseif params.optimizer == 'adam' then
+            optim_state = {
+              learningRate = params.learning_rate,
+            }
+          else
+            error(string.format('Unrecognized optimizer "%s"', params.optimizer))
+          end
+
+          -- Running group of subiterations
+          for si = 0, sub_iter - 1 do
+            cur_iter = iter_group + si
+            if params.optimizer == 'lbfgs' then
+              local x, losses = optim.lbfgs(feval, img_fragment, optim_state)
+            elseif params.optimizer == 'adam' then
+              local x, losses = optim.adam(feval, img_fragment, optim_state)
+            end
+            if cur_iter >= params.num_iterations then break end
+          end
+
+          -- Making full row of fragments
+          --if params.save_iter == 1 then
+          --  maybe_save(img_fragment, "_fragment["fx..","..fy.."]_processed.png")
+          --end
+
+          if (overlap > 0) and (fx > 1) then
+            local fragment_size = params.image_size
+            local iw, ih = img:size(3), img:size(2)
+            local mw, mh = math.min(overlap, iw - fx + 1), math.min(fragment_size, ih - fy + 1)
+            local xmask = torch.linspace(0, 1, overlap + 2)[{{2, -2}}]:view(1, 1, -1):expand(img_row:size(1), mh, overlap)
+            -- Cropping
+            local front = img_fragment[{{}, {1, mh}, {1, mw}}]:double()
+            local back = img_row[{{}, {1, mh}, {fx, fx + mw - 1}}]:double()
+            xmask = xmask[{{}, {}, {1, mw}}] --:contiguous()
+            -- Combining
+            img_row[{{}, {1, mh}, {fx, fx + mw - 1}}] = torch.cmul(front, xmask):add(torch.cmul(back, 1 - xmask)):type(img_row:type())
+            local cw = math.min(fragment_size, iw - fx + 1) - overlap
+            if cw > 0 then
+              img_row[{{}, {1, mh}, {fx + overlap, fx + overlap + cw - 1}}] = img_fragment[{{}, {1, mh}, {1 + overlap, overlap + cw}}]:type(img_row:type())
+            end
+          else
+            local fragment_size = params.image_size
+            local iw, ih = img:size(3), img:size(2)
+            local cw, ch = math.min(fragment_size, iw - fx + 1), math.min(fragment_size, ih - fy + 1)
+            if cw > 0 then
+              img_row[{{}, {1, ch}, {fx, fx + cw - 1}}] = img_fragment[{{}, {1, ch}, {1, cw}}]:type(img_row:type())
+            end
+          end
+
+          net = nil
+          content_losses, style_losses = nil, nil
+          collectgarbage()
+        end  -- fx
+
+        -- Placing row to image
+        if (overlap > 0) and (fy > 1) then
+          local iw, ih = img:size(3), img:size(2)
+          local mw, mh = img_row:size(3), math.min(overlap, ih - fy + 1)
+          local ymask = torch.linspace(0, 1, overlap + 2)[{{2, -2}}]:view(1, -1, 1):expand(img_row:size(1), overlap, mw)
+          -- Cropping
+          local front = img_row[{{}, {1, mh}, {}}]:double()
+          local back = img[{{}, {fy, fy + mh - 1}, {}}]:double()
+          ymask = ymask[{{}, {1, mh}, {}}] --:contiguous()
+          -- Combining
+          img[{{}, {fy, fy + mh - 1}, {}}] = torch.cmul(front, ymask):add(torch.cmul(back, 1 - ymask)):type(img:type())
+          local ch = math.min(img_row:size(2), ih - fy + 1) - overlap
+          if ch > 0 then
+            img[{{}, {fy + overlap, fy + overlap + ch - 1}, {}}] = img_row[{{}, {overlap + 1, overlap + ch}, {}}]:type(img:type())
+          end
+        else
+          local fragment_size = params.image_size
+          local iw, ih = img:size(3), img:size(2)
+          local cw, ch = img_row:size(3), math.min(img_row:size(2), ih - fy + 1)
+          if ch > 0 then
+            img[{{}, {fy, fy + ch - 1}, {}}] = img_row[{{}, {1, ch}, {}}]:type(img:type())
+          end
+        end
+
+        img_row = nil
+        if params.save_iter == 1 then
+          maybe_save(img, "_s["..scalestring.."]-r["..fy.."].png")
+        end
+        collectgarbage()
+      end  -- fy
+
+      if params.save_iter == 1 then
+        maybe_save(img, "_s["..scalestring.."].png")
       end
-    else
-      local fragment_size = params.image_size
-      local iw, ih = img:size(3), img:size(2)
-      local cw, ch = img_row:size(3), math.min(img_row:size(2), ih - fy + 1)
-      if ch > 0 then
-        img[{{}, {fy, fy + ch - 1}, {}}] = img_row[{{}, {1, ch}, {}}]:type(img:type())
-      end
-    end
+    end -- iteration group
+  end -- process_img()
 
 
-    img_row = nil
-    if params.save_iter == 1 then
-      maybe_save(img, "_s["..scalestring.."]-r["..fy.."].png")
-    end
-    collectgarbage()
+  scaledown  = params.scale_down  --0.5
+  scaleup    = params.scale_up    --2.0
+  scalesteps = params.scale_steps --3
 
-
-end  -- fy
-if params.save_iter == 1 then
-  maybe_save(img, "_s["..scalestring.."].png")
-end
-end -- iteration group
-end -- process_img()
-
-
-scaledown  = params.scale_down  --0.5
-scaleup    = params.scale_up    --2.0
-scalesteps = params.scale_steps --3
-
-local scale_eps = 1e-10
-if scaledown < 0 then
-  scaledown = -scaledown / math.max(content_image:size(2), content_image:size(3)) + scale_eps
-end
-if scaleup < 0 then
-  scaleup = -scaleup / math.max(content_image:size(2), content_image:size(3)) + scale_eps
-end
-
-if (scaledown > scaleup) then
-  scalecurrent = scaleup
-  scaleup = scaledown
-  scaledown = scalecurrent
-end
-if scalesteps < 2 then
-  if (scaleup / scaledown) > 2 then
-    scalesteps = math.ceil(math.log(scaleup / scaledown) / math.log(2)) + 1
-  else
-    scalesteps = 2
+  local scale_eps = 1e-10
+  if scaledown < 0 then
+    scaledown = -scaledown / math.max(content_image:size(2), content_image:size(3)) + scale_eps
   end
-end
+  if scaleup < 0 then
+    scaleup = -scaleup / math.max(content_image:size(2), content_image:size(3)) + scale_eps
+  end
 
+  if (scaledown > scaleup) then
+    scalecurrent = scaleup
+    scaleup = scaledown
+    scaledown = scalecurrent
+  end
+  if scalesteps < 2 then
+    if (scaleup / scaledown) > 2 then
+      scalesteps = math.ceil(math.log(scaleup / scaledown) / math.log(2)) + 1
+    else
+      scalesteps = 2
+    end
+  end
 
   if params.init_image ~= '' then
     init_image = image.load(params.init_image, 3)
@@ -515,7 +520,6 @@ end
   end
   img = img:type(dtype)
 
-
   scalecurrent = (math.log(scaleup) - math.log(scaledown)) / (scalesteps - 1)
   if scalecurrent == 0 then
     scalecurrent = 1
@@ -523,8 +527,8 @@ end
   else
     scalesteps = scalesteps .. "-step scaling."
   end
-print( "Scale: " .. scaledown .. "-" .. scaleup .. ", " .. scalesteps )
---print( math.log(scaledown), math.log(scaleup) + scale_eps, scalecurrent )
+  print( "Scale: " .. scaledown .. "-" .. scaleup .. ", " .. scalesteps )
+  --print( math.log(scaledown), math.log(scaleup) + scale_eps, scalecurrent )
   for scalelog = math.log(scaledown), math.log(scaleup) + scale_eps, scalecurrent do
     scalecurrent = math.min(math.exp(scalelog), scaleup)
     scalestring  = string.format('%0.03f', scalecurrent)
@@ -541,11 +545,9 @@ print( "Scale: " .. scaledown .. "-" .. scaleup .. ", " .. scalesteps )
     process_img()
   end
 
+  maybe_save(img, "")
 
-maybe_save(img, "")
-
-
-print("Done.")
+  print("Done.")
 
 end -- main()
 
