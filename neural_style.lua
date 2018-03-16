@@ -723,7 +723,7 @@ function ContentLoss:updateGradInput(input, gradOutput)
     self.gradInput:mul(self.strength)
     self.gradInput:add(gradOutput)
   else
-    self.gradInput:resizeAs(gradOutput):copy(gradOutput)
+    self.gradInput = gradOutput
   end
   return self.gradInput
 end
@@ -777,9 +777,9 @@ function StyleLoss:updateOutput(input)
   self.G:div(input:nElement())
   if self.mode == 'capture' then
     if self.blend_weight == nil then
-      self.target:resizeAs(self.G):copy(self.G)
+      self.target = self.G
     elseif self.target:nElement() == 0 then
-      self.target:resizeAs(self.G):copy(self.G):mul(self.blend_weight)
+      self.target = torch.mul(self.G, self.blend_weight)
     else
       self.target:add(self.blend_weight, self.G)
     end
