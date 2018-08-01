@@ -684,7 +684,8 @@ end
 -- content image to perform color-independent style transfer.
 function original_colors(content, generated)
   local generated_y = image.rgb2yuv(generated)[{{1, 1}}]
-  local content_uv = image.rgb2yuv(content)[{{2, 3}}]
+  local content_uv = image.scale(content, generated_y:size(3), generated_y:size(2), 'bilinear')
+  content_uv = image.rgb2yuv(content_uv)[{{2, 3}}]
   return image.yuv2rgb(torch.cat(generated_y, content_uv, 1))
 end
 
